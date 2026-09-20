@@ -1,0 +1,34 @@
+[Unit]
+Description=Omen Space — Unified Daemon (omen-space-daemon)
+After=dbus.service systemd-logind.service
+Requires=dbus.service systemd-logind.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sleep 2
+ExecStart=/usr/libexec/omen-space/omen-space-daemon
+Restart=on-failure
+RestartSec=3
+
+# Run as root to access MSRs, WMI, and D-Bus policies
+# DynamicUser is removed because D-Bus doesn't play well with dynamically allocated users
+
+# Security sandboxing
+NoNewPrivileges=true
+LockPersonality=true
+RestrictSUIDSGID=true
+ProtectSystem=strict
+PrivateTmp=true
+ProtectHome=true
+PrivateNetwork=false
+ProtectKernelModules=false
+ProtectControlGroups=true
+RestrictNamespaces=true
+
+
+# Allow /sys writes for unprivileged fan/power control via udev rules
+ProtectKernelTunables=no
+ReadWritePaths=/sys /etc/omen-space
+
+[Install]
+WantedBy=multi-user.target

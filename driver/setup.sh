@@ -13,44 +13,33 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-MODNAME="hp-rgb-lighting"
+MODNAME="hp-omen-extra"
 MODVER=$(grep -oP 'PACKAGE_VERSION="\K[^"]+' dkms.conf 2>/dev/null || echo "1.3.5")
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # MOK_DIR — initialised here so it is always defined (avoids unbound variable
 # errors in the MOK_PENDING check when Secure Boot is disabled)
-MOK_DIR="/var/lib/hp-manager/mok"
+MOK_DIR="/var/lib/omen-space/mok"
+
+# modprobe.d file that overrides the stock hp-wmi with our custom DKMS build.
+# Created during install, removed during uninstall.
+HPWMI_OVERRIDE_CONF="/etc/modprobe.d/omen-space-hpwmi-override.conf"
 
 # ── Kernel version detection ──────────────────────────────────────────────────
-# Kernel 7.0+ has Omen/Victus fan control in the stock hp-wmi module.
 KVER_MAJOR=$(uname -r | cut -d. -f1)
 KVER_MINOR=$(uname -r | cut -d. -f2)
 BOARD_NAME=$(cat /sys/devices/virtual/dmi/id/board_name 2>/dev/null | tr '[:lower:]' '[:upper:]' || echo "")
-FORCE_CUSTOM_HPWMI=true
 
-STOCK_FAN_SUPPORT=false
-if [ "$KVER_MAJOR" -gt 7 ] || { [ "$KVER_MAJOR" -eq 7 ] && [ "$KVER_MINOR" -ge 0 ]; }; then
-    STOCK_FAN_SUPPORT=true
-    # Verify stock hp-wmi actually exists in the kernel tree (e.g. some Zen/Arch kernels omit it)
-    if ! modinfo hp-wmi &>/dev/null; then
-        # Check if the kernel tree is simply missing due to a pending reboot (common on Arch/CachyOS)
-        if [ ! -e "/lib/modules/$(uname -r)/modules.dep" ] && [ ! -e "/usr/lib/modules/$(uname -r)/modules.dep" ]; then
-            echo -e "${RED}[ERROR] Kernel modules for $(uname -r) are missing or broken.${NC}"
-            echo -e "${RED}[ERROR] This usually means you updated your kernel but haven't rebooted.${NC}"
-            echo -e "${RED}[ERROR] Please reboot your system and run the installer again.${NC}"
-            exit 1
-        fi
-        echo -e "${YELLOW}[WARN] Kernel >= 7.0 detected but stock hp-wmi module is missing. Forcing custom hp-wmi build.${NC}"
-        STOCK_FAN_SUPPORT=false
-        FORCE_CUSTOM_HPWMI=true
-    fi
-fi
-if $FORCE_CUSTOM_HPWMI; then
-    STOCK_FAN_SUPPORT=false
-fi
-# Allow the parent installer to request RGB-only mode (e.g. user declined patched hp-wmi).
-if [ "${FORCE_RGB_ONLY:-false}" = true ]; then
-    STOCK_FAN_SUPPORT=true
+# Bail out early when kernel modules are clearly missing (pending reboot).
+# This catches the common Arch/CachyOS case where the kernel was updated
+# but the user hasn't rebooted yet — DKMS would silently build against the
+# wrong headers and then fail to load.
+if [ ! -e "/lib/modules/$(uname -r)/modules.dep" ] && \
+   [ ! -e "/usr/lib/modules/$(uname -r)/modules.dep" ]; then
+    echo -e "${RED}[ERROR] Kernel modules for $(uname -r) are missing or broken.${NC}"
+    echo -e "${RED}[ERROR] This usually means you updated your kernel but haven't rebooted.${NC}"
+    echo -e "${RED}[ERROR] Please reboot your system and run the installer again.${NC}"
+    exit 1
 fi
 
 info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
@@ -126,7 +115,23 @@ install_deps() {
             elif [[ $RUNNING_KVER == *"-rt"* ]]; then
                 HEADERS_PKG="linux-rt-headers"
             else
-                HEADERS_PKG="linux-headers"
+                # FIX #173: Manjaro and vanilla Arch kernels use versioned headers packages
+                # (e.g. linux612-headers for 6.12.x-MANJARO, linux61-headers for 6.1.x).
+                # The generic 'linux-headers' meta-package on Manjaro resolves to the LTS
+                # kernel headers, which may differ from the running kernel — causing DKMS
+                # build failures.  Derive the correct package from the running kernel version.
+                local KVER_MAJOR KVER_MINOR VERSIONED_PKG
+                KVER_MAJOR=$(echo "$RUNNING_KVER" | cut -d. -f1)
+                KVER_MINOR=$(echo "$RUNNING_KVER" | cut -d. -f2)
+                VERSIONED_PKG="linux${KVER_MAJOR}${KVER_MINOR}-headers"
+                if pacman -Si "$VERSIONED_PKG" &>/dev/null 2>&1; then
+                    HEADERS_PKG="$VERSIONED_PKG"
+                    info "Detected versioned headers package: $VERSIONED_PKG"
+                else
+                    HEADERS_PKG="linux-headers"
+                    warn "Could not find $VERSIONED_PKG — falling back to linux-headers."
+                    warn "If DKMS fails, manually install headers for kernel $RUNNING_KVER."
+                fi
             fi
 
             info "Attempting to install: dkms $HEADERS_PKG base-devel"
@@ -136,6 +141,7 @@ install_deps() {
                     || warn "Header installation failed. DKMS might not work without headers."
             fi
             ;;
+
         opensuse*|suse*)
             info "Installing dependencies (zypper)..."
             zypper install -y dkms kernel-devel kernel-default-devel gcc make
@@ -181,7 +187,7 @@ install_deps() {
 # ── Helper: find module path in both /lib and /usr/lib ───────────────────────
 # Some distros (Arch, CachyOS, Gentoo, newer Debian/Ubuntu) store kernel
 # modules under /usr/lib/modules rather than /lib/modules.  Both paths are
-# searched so backups and restores work on all distros.
+# searched so the functions below work on all distros.
 
 find_module_paths() {
     local pattern="$1"
@@ -192,21 +198,47 @@ find_module_paths() {
         -name "$pattern" 2>/dev/null | sort -u
 }
 
+# ── Stock hp-wmi blacklisting ─────────────────────────────────────────────────
+# FIX #211: The old approach of renaming the stock hp-wmi.ko file to .backup
+# was fragile — on CachyOS/Arch, modinfo -n hp-wmi can return the DKMS path
+# (updates/…) even before our module is installed, causing the backup step to
+# silently skip, leaving both the stock and custom .ko files present.  At boot
+# the kernel then refuses to load the duplicate and drops to emergency mode.
+#
+# Solution: use the kernel's own modprobe override mechanism instead.
+# Writing `blacklist hp_wmi` + `install hp_wmi /bin/true` to a modprobe.d file
+# guarantees:
+#   • The stock module is never loaded (not at boot, not by modprobe).
+#   • The custom DKMS build placed in updates/ is found first by depmod/modprobe.
+#   • Kernel updates cannot re-enable the stock module without the user removing
+#     this file (which do_uninstall() does automatically).
+#
+# This approach works whether the stock module lives in /lib/modules or
+# /usr/lib/modules and is immune to the DKMS path-detection race.
+
+install_hpwmi_override() {
+    # The previous approach of blacklisting hp_wmi prevents systemd-modules-load
+    # from autoloading it at boot. Since DKMS places hp-wmi.ko in updates/ which
+    # depmod already prefers over the stock kernel path, we do not need to
+    # override or blacklist anything.
+    # We explicitly remove the old override if it exists.
+    remove_hpwmi_override
+}
+
+remove_hpwmi_override() {
+    if [ -f "$HPWMI_OVERRIDE_CONF" ]; then
+        rm -f "$HPWMI_OVERRIDE_CONF"
+        ok "Removed hp-wmi modprobe override ($HPWMI_OVERRIDE_CONF)"
+    fi
+}
+
 # ── Install ───────────────────────────────────────────────────────────────────
 
 do_install() {
     [[ $EUID -ne 0 ]] && error "This script must be run as root (use sudo)."
-    local ORIG_WMI=""
 
     detect_distro
     install_deps
-
-    if $FORCE_CUSTOM_HPWMI; then
-        case "$BOARD_NAME" in
-            8D41|8D42|8BCD) warn "Board ${BOARD_NAME:-unknown} detected — forcing custom hp-wmi install path on kernel $(uname -r)." ;;
-            *) warn "Forcing custom hp-wmi install path on kernel $(uname -r)." ;;
-        esac
-    fi
 
     # Detect Clang-built kernel and set LLVM=1 automatically
     if grep -iq "clang" /proc/version; then
@@ -229,54 +261,41 @@ do_install() {
     # Purge stale .ko files from previous installs that may reference
     # removed symbols (e.g. hp_wmi_mutex).  Without this, modprobe may
     # find and load the old .ko instead of the freshly built one.
-    info "Purging stale hp-rgb-lighting module files..."
+    info "Purging stale module files..."
     KVER=$(uname -r)
     find /lib/modules/"$KVER" /usr/lib/modules/"$KVER" \
-        -name 'hp-rgb-lighting.ko*' -delete 2>/dev/null || true
+        -name 'hp-omen-extra.ko*' -delete 2>/dev/null || true
+    find /lib/modules/"$KVER" /usr/lib/modules/"$KVER" \
+        -path '*/updates/*' -name 'hp-wmi.ko*' -delete 2>/dev/null || true
     depmod -a 2>/dev/null || true
 
-    # Tüm eski/artık DKMS girdilerini temizle
+    # Remove all existing DKMS entries for this module
     if dkms status "$MODNAME" 2>/dev/null | grep -q "$MODNAME"; then
         warn "Removing existing DKMS entries for $MODNAME..."
-        for v in $(dkms status "$MODNAME" | grep -oP '(?<='"$MODNAME"'[/, ])[^,:]+' | tr -d ' ' | sort -u); do
+        for v in $(dkms status "$MODNAME" | grep -oP "(?<=${MODNAME}[/, ])[^,:]+" | tr -d ' ' | sort -u); do
             [ -z "$v" ] && continue
             dkms remove -m "$MODNAME" -v "$v" --all 2>/dev/null || true
         done
     fi
 
-    if $STOCK_FAN_SUPPORT; then
-        info "Kernel $(uname -r) detected (>= 7.0) — stock hp-wmi already has Omen fan control."
-        info "Only building hp-rgb-lighting (RGB keyboard control)..."
+    # ── Stock hp-wmi override ────────────────────────────────────────────────
+    # Must be done BEFORE depmod/dkms so that when the DKMS module lands in
+    # updates/ it is the only copy modprobe will ever see.
+    # This replaces the old file-backup approach which was unreliable on
+    # CachyOS/Arch (see install_hpwmi_override() docblock above).
+    install_hpwmi_override
 
-        # RGB-only DKMS config — pass RGB_ONLY=1 so Makefile only builds hp-rgb-lighting
-        cat > "/usr/src/${MODNAME}-${MODVER}/dkms.conf" <<DKMSRGB
-PACKAGE_NAME="hp-rgb-lighting"
-PACKAGE_VERSION="$MODVER"
-MAKE[0]="grep -iq clang /proc/version && make LLVM=1 RGB_ONLY=1 -C \$kernel_source_dir M=\$dkms_tree/\$module/\$module_version/build EXTRA_CFLAGS='' modules || make RGB_ONLY=1 -C \$kernel_source_dir M=\$dkms_tree/\$module/\$module_version/build EXTRA_CFLAGS='' modules"
-CLEAN=true
-BUILT_MODULE_NAME[0]="hp-rgb-lighting"
-DEST_MODULE_LOCATION[0]="/kernel/drivers/platform/x86/hp"
-AUTOINSTALL="yes"
-DKMSRGB
+    # ── DKMS build & install — always full (both hp-wmi + hp-omen-extra) ─────
+    # We no longer maintain a "RGB-only" mode for kernel >= 7.0.  The custom
+    # hp-wmi is always built to preserve gpu_tgp, gpu_ppab, chassis_temp and
+    # improved Omen fan-curve support regardless of kernel version.
+    info "Building and installing custom hp-wmi + hp-omen-extra via DKMS..."
+    if [ "$KVER_MAJOR" -gt 7 ] || { [ "$KVER_MAJOR" -eq 7 ] && [ "$KVER_MINOR" -ge 0 ]; }; then
+        info "Kernel $(uname -r) (>= 7.0) detected — custom hp-wmi overrides stock to expose gpu_tgp, gpu_ppab, chassis_temp."
     else
-        if [ "$KVER_MAJOR" -gt 7 ] || { [ "$KVER_MAJOR" -eq 7 ] && [ "$KVER_MINOR" -ge 0 ]; }; then
-            info "Kernel $(uname -r) detected (>= 7.0) but custom hp-wmi is forced — installing both hp-wmi and hp-rgb-lighting..."
-        else
-            info "Kernel $(uname -r) detected (< 7.0) — installing both hp-wmi and hp-rgb-lighting..."
-        fi
-
-        info "Checking for stock hp-wmi driver path..."
-        # FIX: modinfo -n resolves symlinks and works on both /lib and /usr/lib
-        ORIG_WMI=$(modinfo -n hp-wmi 2>/dev/null || true)
-        if [[ -n "$ORIG_WMI" ]] && [[ -f "$ORIG_WMI" ]] && [[ ! "$ORIG_WMI" == *"updates"* ]] && [[ ! "$ORIG_WMI" == *"dkms"* ]]; then
-            info "Stock driver detected at: $ORIG_WMI"
-        else
-            ORIG_WMI=""
-        fi
+        info "Kernel $(uname -r) (< 7.0) detected — installing both hp-wmi and hp-omen-extra."
     fi
 
-    # Install via DKMS
-    info "Installing via DKMS..."
     if ! dkms status "$MODNAME/$MODVER" 2>/dev/null | grep -Eq "^${MODNAME}/${MODVER}([,:]|$)"; then
         dkms add -m "$MODNAME" -v "$MODVER" || true
     else
@@ -296,37 +315,30 @@ DKMSRGB
     info "Verifying DKMS module installation..."
     _dkms_verify_ok=true
 
-    if ! modinfo hp-rgb-lighting &>/dev/null; then
-        warn "hp-rgb-lighting not found by modinfo after DKMS install — retrying with --force..."
+    if ! modinfo hp-omen-extra &>/dev/null; then
+        warn "hp-omen-extra not found by modinfo after DKMS install — retrying with --force..."
         dkms install -m "$MODNAME" -v "$MODVER" -k "$(uname -r)" --force 2>/dev/null || true
         depmod -a
-        if ! modinfo hp-rgb-lighting &>/dev/null; then
+        if ! modinfo hp-omen-extra &>/dev/null; then
             _dkms_verify_ok=false
-            warn "hp-rgb-lighting STILL not found after forced reinstall."
+            warn "hp-omen-extra STILL not found after forced reinstall."
             warn "Try manually: sudo dkms install $MODNAME/$MODVER -k $(uname -r) --force"
         fi
     fi
 
-    if ! $STOCK_FAN_SUPPORT; then
-        if ! modinfo hp-wmi 2>/dev/null | grep -q "dkms\|updates\|extra"; then
-            warn "Custom hp-wmi not found in expected DKMS/updates path — retrying..."
-            dkms install -m "$MODNAME" -v "$MODVER" -k "$(uname -r)" --force 2>/dev/null || true
-            depmod -a
-        fi
+    # Verify custom hp-wmi landed in the DKMS/updates path (not the stock path)
+    local hpwmi_path
+    hpwmi_path=$(modinfo -n hp-wmi 2>/dev/null || true)
+    if [[ -n "$hpwmi_path" ]] && [[ "$hpwmi_path" != *"updates"* ]] && \
+       [[ "$hpwmi_path" != *"dkms"* ]] && [[ "$hpwmi_path" != *"extra/"* ]]; then
+        warn "Custom hp-wmi not found in DKMS/updates path (found: $hpwmi_path) — retrying..."
+        dkms install -m "$MODNAME" -v "$MODVER" -k "$(uname -r)" --force 2>/dev/null || true
+        depmod -a
     fi
 
     if $_dkms_verify_ok; then
-        ok "DKMS module verified: $(modinfo -n hp-rgb-lighting 2>/dev/null || echo 'path unknown')"
-    fi
-
-    # After DKMS install succeeds, archive stock hp-wmi so the DKMS module wins consistently.
-    if ! $STOCK_FAN_SUPPORT && [[ -n "$ORIG_WMI" ]] && [[ -f "$ORIG_WMI" ]]; then
-        if [[ ! -f "${ORIG_WMI}.backup" ]]; then
-            info "Backing up stock driver: $ORIG_WMI"
-            mv "$ORIG_WMI" "${ORIG_WMI}.backup"
-        else
-            info "Stock backup already exists: ${ORIG_WMI}.backup"
-        fi
+        ok "DKMS module verified: $(modinfo -n hp-omen-extra 2>/dev/null || echo 'path unknown')"
+        ok "Custom hp-wmi at:     $(modinfo -n hp-wmi 2>/dev/null || echo 'path unknown')"
     fi
 
     # ── Secure Boot handling ─────────────────────────────────────────────────
@@ -346,7 +358,7 @@ DKMSRGB
             openssl req -new -x509 -newkey rsa:2048 \
                 -keyout "$MOK_DIR/MOK.priv" \
                 -outform DER -out "$MOK_DIR/MOK.der" \
-                -days 36500 -subj "/CN=hp-manager-mok/" -nodes 2>/dev/null
+                -days 36500 -subj "/CN=omen-space-mok/" -nodes 2>/dev/null
             chmod 600 "$MOK_DIR/MOK.priv"
         fi
 
@@ -363,10 +375,7 @@ DKMSRGB
             -name "sign-file" -type f 2>/dev/null | head -n 1)
 
         if [ -n "$SIGN_SCRIPT" ]; then
-            for MOD_NAME in "hp-rgb-lighting.ko" "hp-wmi.ko"; do
-                if [ "$MOD_NAME" = "hp-wmi.ko" ] && $STOCK_FAN_SUPPORT; then
-                    continue
-                fi
+            for MOD_NAME in "hp-omen-extra.ko" "hp-wmi.ko"; do
                 MOD_PATH=$(find_module_paths "$MOD_NAME" "$KVER" | grep -v "backup" | head -n 1)
                 if [ -n "$MOD_PATH" ]; then
                     "$SIGN_SCRIPT" sha256 "$MOK_DIR/MOK.priv" "$MOK_DIR/MOK.der" "$MOD_PATH" \
@@ -418,43 +427,39 @@ DKMSRGB
 
     if $MOK_PENDING; then
         info "MOK enrollment pending — skipping module load until reboot."
-    elif $STOCK_FAN_SUPPORT; then
-        info "Loading modules..."
-        # Unload any stale hp_rgb_lighting first so the freshly built one is loaded
-        modprobe -r hp_rgb_lighting 2>/dev/null || true
-        modprobe led_class_multicolor 2>/dev/null || true
-        # FIX: use modprobe (not insmod) — searches DKMS-installed paths correctly
-        if modprobe hp_rgb_lighting 2>/dev/null; then
-            ok "hp-rgb-lighting loaded successfully"
-        else
-            warn "hp-rgb-lighting could not be loaded. (Secure Boot issue?)"
-        fi
-        ok "hp-rgb-lighting (RGB) installed. Stock hp-wmi handles fan control."
     else
         info "Loading modules..."
-        # FIX: modprobe -r handles dependency unloading correctly (rmmod does not)
-        modprobe -r hp_wmi 2>/dev/null || true
+        # Unload any existing hp_wmi / hp_omen_extra first (order matters for deps)
+        modprobe -r hp_omen_extra 2>/dev/null || true
+        modprobe -r hp_wmi        2>/dev/null || true
         modprobe led_class_multicolor 2>/dev/null || true
-        # FIX: modprobe searches /lib/modules AND /usr/lib/modules (insmod cannot)
+        # Load the custom DKMS hp-wmi first (override conf ensures this wins)
         if modprobe hp_wmi 2>/dev/null; then
-            ok "hp-wmi loaded successfully"
+            ok "Custom hp-wmi loaded successfully"
         else
-            warn "hp-wmi could not be loaded — check: dmesg | tail -20"
+            warn "Custom hp-wmi could not be loaded — check: dmesg | tail -20"
         fi
-        if modprobe hp_rgb_lighting 2>/dev/null; then
-            ok "hp-rgb-lighting loaded successfully"
+        if modprobe hp_omen_extra 2>/dev/null; then
+            ok "hp-omen-extra loaded successfully"
         else
-            warn "hp-rgb-lighting could not be loaded."
+            warn "hp-omen-extra could not be loaded."
         fi
-        ok "Both hp-wmi and hp-rgb-lighting installed."
+        ok "Both hp-wmi and hp-omen-extra installed."
     fi
 
     echo ""
     info "The module will be automatically rebuilt on kernel updates via DKMS."
-    if ! $STOCK_FAN_SUPPORT; then
-        info "Fan control: /sys/devices/platform/hp-wmi/hwmon/hwmon*/pwm1_enable"
-        info "Fan speed:   /sys/devices/platform/hp-wmi/hwmon/hwmon*/fan*_target"
-    fi
+    info "Fan control: /sys/devices/platform/hp-wmi/hwmon/hwmon*/pwm1_enable"
+    info "Fan speed:   /sys/devices/platform/hp-wmi/hwmon/hwmon*/fan*_target"
+    info "GPU TGP:     /sys/devices/platform/hp-wmi/gpu_tgp"
+
+    # Create modules-load.d entry so systemd loads both modules at boot.
+    # hp_wmi must be listed first: it is a dependency of hp_omen_extra and
+    # listing it explicitly guarantees the DKMS version (in updates/) loads
+    # before the dependency resolver runs for hp_omen_extra.
+    info "Configuring auto-load on boot..."
+    printf 'hp_wmi\nhp_omen_extra\n' > /etc/modules-load.d/hp-omen-extra.conf
+
     echo ""
 }
 
@@ -465,7 +470,7 @@ do_uninstall() {
 
     info "Unloading modules..."
     # FIX: modprobe -r handles inter-module dependencies; rmmod does not
-    modprobe -r hp_rgb_lighting 2>/dev/null || true
+    modprobe -r hp_omen_extra 2>/dev/null || true
     modprobe -r hp_wmi          2>/dev/null || true
 
     info "Removing DKMS entry..."
@@ -477,26 +482,29 @@ do_uninstall() {
         warn "DKMS entry not found. Nothing to remove."
     fi
 
-    # Restore original driver backups
-    info "Restoring original driver backups (if any)..."
-    KVER=$(uname -r)
-    FOUND_BACKUP=false
+    # Remove modules-load.d entry
+    rm -f /etc/modules-load.d/hp-omen-extra.conf
 
-    # FIX: search both /lib/modules and /usr/lib/modules — Arch/CachyOS use the latter
+    # Remove the modprobe override so the stock hp-wmi is re-enabled
+    remove_hpwmi_override
+
+    # Purge any stale .ko files left by previous backup-based installs
+    info "Cleaning up any stale module files..."
+    KVER=$(uname -r)
+
+    # Remove old-style .backup files created by previous installer versions
     while IFS= read -r BU_FILE; do
         ORIG_FILE="${BU_FILE%.backup}"
-        info "Restoring $ORIG_FILE from backup..."
+        info "Restoring $ORIG_FILE from legacy backup..."
         mv "$BU_FILE" "$ORIG_FILE"
-        FOUND_BACKUP=true
     done < <(find_module_paths "hp-wmi.ko*.backup" "$KVER")
 
-    if [ "$FOUND_BACKUP" = true ]; then
-        depmod -a
-        info "Reloading original hp-wmi module..."
-        modprobe hp_wmi 2>/dev/null || warn "Could not reload original hp-wmi module."
-    else
-        info "No backup found — skipping restore."
-    fi
+    depmod -a
+
+    info "Reloading stock hp-wmi module..."
+    modprobe hp_wmi 2>/dev/null || warn "Could not reload stock hp-wmi — may need a reboot."
+
+    ok "omen-space driver uninstalled. Stock hp-wmi restored."
 }
 
 # ── Helper (also used in uninstall) ──────────────────────────────────────────

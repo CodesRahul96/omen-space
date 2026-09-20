@@ -3,10 +3,10 @@
 # When RGB_ONLY=1, only build the RGB lighting companion driver
 # (used on kernel >=7.0 where stock hp-wmi already handles fan control)
 ifdef RGB_ONLY
-obj-m += hp-rgb-lighting.o
+obj-m += hp-omen-extra.o
 else
 obj-m += hp-wmi.o
-obj-m += hp-rgb-lighting.o
+obj-m += hp-omen-extra.o
 endif
 
 # Kernel build directory
@@ -49,7 +49,7 @@ install-arch:
 
 uninstall:
 	rm -f /lib/modules/$(shell uname -r)/extra/hp-wmi.ko
-	rm -f /lib/modules/$(shell uname -r)/extra/hp-rgb-lighting.ko
+	rm -f /lib/modules/$(shell uname -r)/extra/hp-omen-extra.ko
 	depmod -a
 
 uninstall-dkms:

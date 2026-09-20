@@ -27,6 +27,7 @@
 #include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/pci.h>
 #include <linux/platform_device.h>
 #include <linux/platform_profile.h>
 #include <linux/power_supply.h>
@@ -34,6 +35,7 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/types.h>
+#include <linux/version.h>
 #include <linux/workqueue.h>
 
 MODULE_AUTHOR("Matthew Garrett <mjg59@srcf.ucam.org>");
@@ -62,6 +64,12 @@ enum hp_ec_offsets {
 #define HP_FAN_SPEED_AUTOMATIC  0x00
 #define HP_POWER_LIMIT_DEFAULT  0x00
 #define HP_POWER_LIMIT_NO_CHANGE 0xFF
+#define HPWMI_MUX_MODE_UMA		BIT(0)
+#define HPWMI_MUX_MODE_HYBRID		BIT(1)
+#define HPWMI_MUX_MODE_DISCRETE		BIT(2)
+#define HPWMI_MUX_MODE_OPTIMUS		BIT(3)
+#define HPWMI_MUX_MODE_MASK		GENMASK(6, 0)
+#define HPWMI_MUX_LEGACY_MASK		(HPWMI_MUX_MODE_HYBRID | HPWMI_MUX_MODE_DISCRETE)
 
 #define ACPI_AC_CLASS "ac_adapter"
 
@@ -160,6 +168,7 @@ static const struct thermal_profile_params omen_v1_unknown_ec_thermal_params = {
  * parameters.
  */
 static struct thermal_profile_params *active_thermal_profile_params;
+static bool has_mux = false;
 
 /*
  * DMI board names of devices that should use the omen specific path for
@@ -181,9 +190,9 @@ static const char *const omen_thermal_profile_boards[] = {
 	"894A", "89EB", "8A15", "8A18", "8A42", "8A43", "8BAD", "8C58", "8E41",
 	/*
 	 * FIX: 8D41 (HP Omen Max), 8BAC (HP Omen 16-wf0xxx), 8BA9, 8E35,
-	 * 8C77, 8BCD removed from this list so they fall through to the
-	 * Victus S-series thermal profile path, which correctly handles
-	 * boards with no EC thermal profile readback.
+	 * 8C75 (HP Omen 17-db0xxx), 8C77, 8BCD removed from this list so
+	 * they fall through to the Victus S-series thermal profile path,
+	 * which correctly handles boards with no EC thermal profile readback.
 	 */
 };
 
@@ -215,6 +224,16 @@ static const char *const victus_thermal_profile_boards[] = {
 
 /* DMI board names of Victus 16-r and Victus 16-s laptops */
 static const struct dmi_system_id victus_s_thermal_profile_boards[] __initconst = {
+	{
+		/* 878A: OMEN Laptop 15-ek0xxx */
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "878A")},
+		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
+	},
+	{
+		/* 8DD0: Victus by HP Gaming Laptop 15-fb3xxx */
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8DD0")},
+		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
+	},
 	{
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8902")},
 		.driver_data = (void *)&omen_v1_legacy_thermal_params,
@@ -319,6 +338,16 @@ static const struct dmi_system_id victus_s_thermal_profile_boards[] __initconst 
 		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
 	},
 	{
+		/*
+		 * 8C75: HP Omen 17-db0xxx.  Same broken GETB helper as 8BAC
+		 * (AE_AML_BUFFER_LIMIT on _SB.WMID.WMBX / WMBA) causes all
+		 * WMID writes to abort silently, leaving fans stuck at 0 RPM
+		 * after an overheat.  Use no-EC params to skip EC reads.
+		 */
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8C75")},
+		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
+	},
+	{
 		/* 8BC2: Victus by HP Gaming Laptop 16-r0xxx */
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8BC2")},
 		.driver_data = (void *)&victus_s_thermal_params,
@@ -391,6 +420,7 @@ enum hp_wmi_commandtype {
 	HPWMI_POSTCODEERROR_QUERY = 0x2a,
 	HPWMI_SYSTEM_DEVICE_MODE  = 0x40,
 	HPWMI_THERMAL_PROFILE_QUERY = 0x4c,
+	HPWMI_GRAPHICS_MUX_QUERY    = 0x52,
 };
 
 struct victus_power_limits {
@@ -420,6 +450,14 @@ enum hp_wmi_gm_commandtype {
 	HPWMI_VICTUS_S_FAN_SPEED_GET_QUERY = 0x2D,
 	HPWMI_VICTUS_S_FAN_SPEED_SET_QUERY = 0x2E,
 	HPWMI_VICTUS_S_GET_FAN_TABLE_QUERY = 0x2F,
+	/*
+	 * 0x23: Chassis / IR temperature sensor. Returns a single byte in
+	 * out4[0] representing degrees Celsius (measured range 34–50 °C on
+	 * the OMEN Transcend 14 / 8C58).  This is the sensor the firmware's
+	 * own thermal guard uses (thresholds 40 °C / 52 °C in OGH), not
+	 * the CPU package die.  Source: ohman docs/research.md §2.
+	 */
+	HPWMI_CHASSIS_TEMP_QUERY           = 0x23,
 };
 
 enum hp_wmi_command {
@@ -520,10 +558,10 @@ static enum platform_profile_option active_platform_profile;
 static bool platform_profile_support;
 static bool zero_insize_support;
 
-static bool force_fan_control_support;
+static bool force_fan_control_support = true;
 module_param(force_fan_control_support, bool, 0444);
 MODULE_PARM_DESC(force_fan_control_support,
-		 "Force support for manual fan control features (default: false)");
+		 "Force support for manual fan control features (default: true)");
 
 static struct rfkill *wifi_rfkill;
 static struct rfkill *bluetooth_rfkill;
@@ -553,7 +591,7 @@ static const char *const tablet_chassis_types[] = {
 
 #define CPU_FAN 0
 #define GPU_FAN 1
-#define VICTUS_S_FALLBACK_MAX_RPM_FW 50
+#define VICTUS_S_FALLBACK_MAX_RPM_FW 60
 #define VICTUS_S_FALLBACK_MAX_RPM    (VICTUS_S_FALLBACK_MAX_RPM_FW * 100)
 
 enum pwm_modes {
@@ -675,8 +713,9 @@ static int hp_wmi_perform_query(int query, enum hp_wmi_command command,
         if (WARN_ON(mid < 0))
                 return mid;
 
-        actual_insize = max(insize, 128);
+        actual_insize = insize;
         bios_args_size = struct_size(args, data, actual_insize);
+        bios_args_size = max_t(size_t, bios_args_size, 128);
         args = kzalloc(bios_args_size, GFP_KERNEL);
         if (!args)
                 return -ENOMEM;
@@ -1435,6 +1474,152 @@ err_free_dev:
 	return err;
 }
 
+static const u8 mux_bitmask_map[] = {
+	[0] = HPWMI_MUX_MODE_HYBRID,
+	[1] = HPWMI_MUX_MODE_DISCRETE,
+	[2] = HPWMI_MUX_MODE_OPTIMUS,
+	[3] = HPWMI_MUX_MODE_UMA,
+};
+
+static bool has_nvidia_gpu(void)
+{
+	struct pci_dev *pdev = NULL;
+	while ((pdev = pci_get_class(PCI_CLASS_DISPLAY_VGA << 8, pdev))) {
+		if (pdev->vendor == PCI_VENDOR_ID_NVIDIA) {
+			pci_dev_put(pdev);
+			return true;
+		}
+	}
+	while ((pdev = pci_get_class(PCI_CLASS_DISPLAY_3D << 8, pdev))) {
+		if (pdev->vendor == PCI_VENDOR_ID_NVIDIA) {
+			pci_dev_put(pdev);
+			return true;
+		}
+	}
+	return false;
+}
+
+static int hp_wmi_get_mux_supported_modes(u8 *supported)
+{
+	u8 legacy_buffer[4] = {};
+	u8 buffer[128] = {};
+	u32 req_packet = 0;
+	int ret;
+
+	if (!supported)
+		return -EINVAL;
+
+	/* Try modern BIOS design data query (128-byte buffer) */
+	ret = hp_wmi_perform_query(HPWMI_GET_SYSTEM_DESIGN_DATA, HPWMI_GM,
+				   buffer, zero_if_sup(req_packet), sizeof(buffer));
+	if (ret == 0) {
+		*supported = buffer[7];
+		return 0;
+	}
+
+	/*
+	 * (Fallback): Legacy BIOS behavior based on Omen Gaming Hub.
+	 * If the modern query is not supported, check if the MUX query endpoint
+	 * responds to a read request. If it succeeds, the hardware has MUX
+	 * capability but lacks the mode map, defaulting to Hybrid + Discrete.
+	 *
+	 * DANGER: Sending HPWMI_GRAPHICS_MUX_QUERY to unsupported models (e.g.,
+	 * AMD Advantage laptops like OMEN 16-xd0xxx) will cause a severe ACPI
+	 * fault and a kernel panic. Only proceed if an NVIDIA GPU is present.
+	 */
+	if (!has_nvidia_gpu())
+		return -ENODEV;
+
+	ret = hp_wmi_perform_query(HPWMI_GRAPHICS_MUX_QUERY, HPWMI_READ,
+				   legacy_buffer, sizeof(legacy_buffer), 0);
+	if (ret < 0)
+		return ret;
+	if (ret > 0)
+		return -EINVAL;
+
+	*supported = HPWMI_MUX_LEGACY_MASK;
+	return 0;
+}
+
+static int hp_wmi_get_mux_mode(u8 *mode)
+{
+	u8 buffer[4] = {};
+	int ret;
+
+	if (!mode)
+		return -EINVAL;
+
+	ret = hp_wmi_perform_query(HPWMI_GRAPHICS_MUX_QUERY, HPWMI_READ,
+				   buffer, sizeof(buffer), sizeof(buffer));
+	if (ret < 0)
+		return ret;
+	if (ret > 0)
+		return -EINVAL;
+
+	/* Mask the highest bit, which might be used as a BIOS status flag */
+	*mode = buffer[0] & HPWMI_MUX_MODE_MASK;
+	return 0;
+}
+
+static int hp_wmi_set_mux_mode(u8 mode)
+{
+	u8 buffer[4] = { mode, 0x00, 0x00, 0x00 };
+	int ret;
+
+	ret = hp_wmi_perform_query(HPWMI_GRAPHICS_MUX_QUERY, HPWMI_WRITE,
+				   buffer, sizeof(buffer), sizeof(buffer));
+	if (ret < 0)
+		return ret;
+	if (ret > 0)
+		return -EINVAL;
+
+	return 0;
+}
+
+static ssize_t gpu_mux_mode_show(struct device *dev,
+				 struct device_attribute *attr,
+				 char *buf)
+{
+	u8 mode;
+	int ret;
+
+	ret = hp_wmi_get_mux_mode(&mode);
+	if (ret)
+		return ret;
+
+	return sysfs_emit(buf, "%u\n", mode);
+}
+
+static ssize_t gpu_mux_mode_store(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf,
+				  size_t count)
+{
+	u32 requested;
+	u8 supported;
+	int ret;
+
+	ret = kstrtou32(buf, 0, &requested);
+	if (ret)
+		return ret;
+	if (requested >= ARRAY_SIZE(mux_bitmask_map))
+		return -EINVAL;
+
+	ret = hp_wmi_get_mux_supported_modes(&supported);
+	if (ret)
+		return ret;
+
+	/* Verify if the requested mode is allowed by the hardware mask */
+	if (!(supported & mux_bitmask_map[requested]))
+		return -EOPNOTSUPP;
+
+	ret = hp_wmi_set_mux_mode(requested);
+	if (ret)
+		return ret;
+
+	return count;
+}
+
 static DEVICE_ATTR_RO(display);
 static DEVICE_ATTR_RO(hddtemp);
 static DEVICE_ATTR_RW(als);
@@ -1444,6 +1629,33 @@ static DEVICE_ATTR_RW(postcode);
 static DEVICE_ATTR_RW(graphics_mode);
 static DEVICE_ATTR_RW(gpu_tgp);
 static DEVICE_ATTR_RW(gpu_ppab);
+static DEVICE_ATTR_RW(gpu_mux_mode);
+
+/*
+ * chassis_temp — read-only sysfs attribute exposing the WMI 0x23 chassis/IR
+ * sensor in degrees Celsius.  The value is the board surface temperature read
+ * by the firmware's own thermal guard (OGH thresholds: 40 °C warn, 52 °C
+ * emergency fan override).  It is NOT the CPU die temperature.
+ *
+ * The attribute is hidden on boards where the query is known to be
+ * unsupported (return code HPWMI_RET_INVALID_PARAMETERS or negative errno).
+ */
+static ssize_t chassis_temp_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	u8 out[4] = {0};
+	u8 query_in[4] = {1, 0, 0, 0};
+	int ret;
+
+	ret = hp_wmi_perform_query(HPWMI_CHASSIS_TEMP_QUERY, HPWMI_GM,
+				   out, sizeof(query_in), sizeof(out));
+	if (ret)
+		return ret < 0 ? ret : -EIO;
+
+	return sysfs_emit(buf, "%u\n", out[0]);
+}
+
+static DEVICE_ATTR_RO(chassis_temp);
 
 static struct attribute *hp_wmi_attrs[] = {
 	&dev_attr_display.attr,
@@ -1455,6 +1667,8 @@ static struct attribute *hp_wmi_attrs[] = {
 	&dev_attr_graphics_mode.attr,
 	&dev_attr_gpu_tgp.attr,
 	&dev_attr_gpu_ppab.attr,
+	&dev_attr_gpu_mux_mode.attr,
+	&dev_attr_chassis_temp.attr,
 	NULL,
 };
 
@@ -1464,8 +1678,25 @@ static umode_t hp_wmi_attrs_is_visible(struct kobject *kobj,
 	if (attr == &dev_attr_graphics_mode.attr)
 		return hp_wmi_gpu_mode_supported() ? attr->mode : 0;
 
+	if (attr == &dev_attr_gpu_mux_mode.attr)
+		return has_mux ? attr->mode : 0;
+
 	if (attr == &dev_attr_gpu_tgp.attr || attr == &dev_attr_gpu_ppab.attr)
 		return is_victus_s_thermal_profile() ? attr->mode : 0;
+
+	/*
+	 * Probe the chassis temp query once to decide visibility.
+	 * A negative errno or a non-zero WMI error hides the attribute.
+	 * We test with the same {1,0,0,0} payload used at read time.
+	 */
+	if (attr == &dev_attr_chassis_temp.attr) {
+		u8 out[4] = {0};
+		u8 q[4] = {1, 0, 0, 0};
+		int r = hp_wmi_perform_query(HPWMI_CHASSIS_TEMP_QUERY,
+					    HPWMI_GM, out, sizeof(q),
+					    sizeof(out));
+		return r ? 0 : attr->mode;
+	}
 
 	return attr->mode;
 }
@@ -1855,7 +2086,15 @@ static int platform_profile_omen_get_ec(enum platform_profile_option *profile)
 	return 0;
 }
 
-static int platform_profile_omen_get(struct device *dev,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
+#define PLATFORM_PROFILE_DEV_ARG struct device *dev
+#define PLATFORM_PROFILE_DEV_PASS dev
+#else
+#define PLATFORM_PROFILE_DEV_ARG struct platform_profile_handler *pprof
+#define PLATFORM_PROFILE_DEV_PASS pprof
+#endif
+
+static int platform_profile_omen_get(PLATFORM_PROFILE_DEV_ARG,
 				     enum platform_profile_option *profile)
 {
 	/*
@@ -1978,7 +2217,7 @@ static int platform_profile_omen_set_ec(enum platform_profile_option profile)
 	return 0;
 }
 
-static int platform_profile_omen_set(struct device *dev,
+static int platform_profile_omen_set(PLATFORM_PROFILE_DEV_ARG,
 				     enum platform_profile_option profile)
 {
 	int err;
@@ -2004,7 +2243,7 @@ static int thermal_profile_set(int thermal_profile)
 				    &thermal_profile, sizeof(thermal_profile), 0);
 }
 
-static int hp_wmi_platform_profile_get(struct device *dev,
+static int hp_wmi_platform_profile_get(PLATFORM_PROFILE_DEV_ARG,
 				       enum platform_profile_option *profile)
 {
 	int tp;
@@ -2033,7 +2272,7 @@ static int hp_wmi_platform_profile_get(struct device *dev,
 	return 0;
 }
 
-static int hp_wmi_platform_profile_set(struct device *dev,
+static int hp_wmi_platform_profile_set(PLATFORM_PROFILE_DEV_ARG,
 				       enum platform_profile_option profile)
 {
 	int err, tp;
@@ -2096,11 +2335,11 @@ static int platform_profile_victus_get_ec(enum platform_profile_option *profile)
 	return 0;
 }
 
-static int platform_profile_victus_get(struct device *dev,
+static int platform_profile_victus_get(PLATFORM_PROFILE_DEV_ARG,
 				       enum platform_profile_option *profile)
 {
 	/* Same cached-value behaviour as platform_profile_omen_get() */
-	return platform_profile_omen_get(dev, profile);
+	return platform_profile_omen_get(PLATFORM_PROFILE_DEV_PASS, profile);
 }
 
 static int platform_profile_victus_set_ec(enum platform_profile_option profile)
@@ -2128,7 +2367,7 @@ static int platform_profile_victus_set_ec(enum platform_profile_option profile)
 static bool is_victus_s_thermal_profile(void)
 {
 	/* is_victus_s_board is initialised in driver init before this is called */
-	return is_victus_s_board || force_fan_control_support;
+	return is_victus_s_board;
 }
 
 static int victus_s_gpu_thermal_profile_get(bool *ctgp_enable,
@@ -2319,7 +2558,7 @@ static int platform_profile_victus_s_set_ec(
 	return 0;
 }
 
-static int platform_profile_victus_s_set(struct device *dev,
+static int platform_profile_victus_s_set(PLATFORM_PROFILE_DEV_ARG,
 					 enum platform_profile_option profile)
 {
 	int err;
@@ -2334,7 +2573,7 @@ static int platform_profile_victus_s_set(struct device *dev,
 	return 0;
 }
 
-static int platform_profile_victus_set(struct device *dev,
+static int platform_profile_victus_set(PLATFORM_PROFILE_DEV_ARG,
 				       enum platform_profile_option profile)
 {
 	int err;
@@ -2497,6 +2736,7 @@ static inline void victus_s_unregister_powersource_event_handler(void)
 	unregister_acpi_notifier(&platform_power_source_nb);
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
 static const struct platform_profile_ops platform_profile_omen_ops = {
 	.probe       = hp_wmi_platform_profile_probe,
 	.profile_get = platform_profile_omen_get,
@@ -2520,10 +2760,35 @@ static const struct platform_profile_ops hp_wmi_platform_profile_ops = {
 	.profile_get = hp_wmi_platform_profile_get,
 	.profile_set = hp_wmi_platform_profile_set,
 };
+#else
+static struct platform_profile_handler platform_profile_omen_handler = {
+	.profile_get = platform_profile_omen_get,
+	.profile_set = platform_profile_omen_set,
+};
+
+static struct platform_profile_handler platform_profile_victus_handler = {
+	.profile_get = platform_profile_victus_get,
+	.profile_set = platform_profile_victus_set,
+};
+
+static struct platform_profile_handler platform_profile_victus_s_handler = {
+	.profile_get = platform_profile_omen_get,
+	.profile_set = platform_profile_victus_s_set,
+};
+
+static struct platform_profile_handler hp_wmi_platform_profile_handler = {
+	.profile_get = hp_wmi_platform_profile_get,
+	.profile_set = hp_wmi_platform_profile_set,
+};
+#endif
 
 static int thermal_profile_setup(struct platform_device *device)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
 	const struct platform_profile_ops *ops;
+#else
+	struct platform_profile_handler *handler;
+#endif
 	int err, tp;
 
 	if (is_omen_thermal_profile()) {
@@ -2537,7 +2802,11 @@ static int thermal_profile_setup(struct platform_device *device)
 		if (err < 0)
 			pr_warn("Failed to apply initial omen thermal profile (%d), continuing\n", err);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
 		ops = &platform_profile_omen_ops;
+#else
+		handler = &platform_profile_omen_handler;
+#endif
 
 	} else if (is_victus_thermal_profile()) {
 		err = platform_profile_victus_get_ec(&active_platform_profile);
@@ -2550,7 +2819,11 @@ static int thermal_profile_setup(struct platform_device *device)
 		if (err < 0)
 			pr_warn("Failed to apply initial thermal profile (%d), continuing\n", err);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
 		ops = &platform_profile_victus_ops;
+#else
+		handler = &platform_profile_victus_handler;
+#endif
 
 	} else if (is_victus_s_thermal_profile()) {
 		if (!active_thermal_profile_params) {
@@ -2579,7 +2852,11 @@ static int thermal_profile_setup(struct platform_device *device)
 		if (err < 0)
 			pr_warn("Failed to apply initial thermal profile (%d), continuing\n", err);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
 		ops = &platform_profile_victus_s_ops;
+#else
+		handler = &platform_profile_victus_s_handler;
+#endif
 
 	} else {
 		tp = thermal_profile_get();
@@ -2590,13 +2867,23 @@ static int thermal_profile_setup(struct platform_device *device)
 		if (err)
 			return err;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
 		ops = &hp_wmi_platform_profile_ops;
+#else
+		handler = &hp_wmi_platform_profile_handler;
+#endif
 	}
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
 	platform_profile_device =
 		devm_platform_profile_register(&device->dev, "hp-wmi", NULL, ops);
 	if (IS_ERR(platform_profile_device))
 		return PTR_ERR(platform_profile_device);
+#else
+	err = platform_profile_register(handler);
+	if (err)
+		return err;
+#endif
 
 	pr_info("Registered as platform profile handler\n");
 	platform_profile_support = true;
@@ -2661,6 +2948,12 @@ static void __exit hp_wmi_bios_remove(struct platform_device *device)
 	priv = platform_get_drvdata(device);
 	if (priv)
 		cancel_delayed_work_sync(&priv->keep_alive_dwork);
+
+	if (platform_profile_support) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 14, 0)
+		platform_profile_remove();
+#endif
+	}
 }
 
 static int hp_wmi_resume_handler(struct device *device)
@@ -3132,21 +3425,26 @@ static int hp_wmi_setup_fan_settings(struct hp_wmi_hwmon_priv *priv)
 			
 			min_rpm = fan_table->entries[0].cpu_rpm;
 			max_rpm = fan_table->entries[fan_table->header.num_fans - 1].cpu_rpm;
-			gpu_delta = (fan_table->entries[0].gpu_rpm > fan_table->entries[0].cpu_rpm)
-				    ? fan_table->entries[0].gpu_rpm - fan_table->entries[0].cpu_rpm
-				    : 0;
-			
-			priv->min_rpm = min_rpm;
-			priv->max_rpm = max_rpm;
-			priv->gpu_delta = gpu_delta;
-			priv->max_rpms[0] = max_rpm * 100;
-			priv->max_rpms[1] = (max_rpm + gpu_delta) * 100;
-			priv->target_rpms[0] = 0;
-			priv->target_rpms[1] = 0;
-			priv->prev_mode      = -1;
-			priv->fan_speed_available = true;
-			priv->uses_victus_s_fan_commands = true;
-			return 0;
+
+			/* Workaround for buggy WMI firmware on boards like 8BBE which return max_rpm=18 (1800 RPM) */
+			if (max_rpm >= 30) {
+				gpu_delta = (fan_table->entries[0].gpu_rpm > fan_table->entries[0].cpu_rpm)
+					    ? fan_table->entries[0].gpu_rpm - fan_table->entries[0].cpu_rpm
+					    : 0;
+				
+				priv->min_rpm = min_rpm;
+				priv->max_rpm = max_rpm;
+				priv->gpu_delta = gpu_delta;
+				priv->max_rpms[0] = max_rpm * 100;
+				priv->max_rpms[1] = (max_rpm + gpu_delta) * 100;
+				priv->target_rpms[0] = 0;
+				priv->target_rpms[1] = 0;
+				priv->prev_mode      = -1;
+				priv->fan_speed_available = true;
+				priv->uses_victus_s_fan_commands = true;
+				return 0;
+			}
+			pr_warn("Malformed or bogus fan table (max_rpm=%d), falling back to probing\n", max_rpm);
 		}
 		pr_warn("Malformed fan table, falling back to probing\n");
 	}
@@ -3251,6 +3549,24 @@ static void __init setup_active_thermal_profile_params(void)
 			"Please report this to platform-driver-x86@vger.kernel.org\n",
 			dmi_get_system_info(DMI_BOARD_NAME));
 }
+static const struct dmi_system_id broken_omen_hpc_guid_boards[] __initconst = {
+	{
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8BCD") },
+	},
+	{
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8C75") },
+	},
+	{
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8BAC") },
+	},
+	{
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "878A") },
+	},
+	{
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8DD0") },
+	},
+	{}
+};
 
 static int __init hp_wmi_init(void)
 {
@@ -3258,7 +3574,7 @@ static int __init hp_wmi_init(void)
 	int bios_capable;
 	int err, tmp = 0;
 
-	if (wmi_has_guid(HPWMI_OMEN_HPC_GUID)) {
+	if (wmi_has_guid(HPWMI_OMEN_HPC_GUID) && !dmi_check_system(broken_omen_hpc_guid_boards)) {
 		active_bios_guid = HPWMI_OMEN_HPC_GUID;
 		bios_capable = 1;
 	} else if (wmi_has_guid(HPWMI_BIOS_GUID)) {
@@ -3285,6 +3601,9 @@ static int __init hp_wmi_init(void)
 	}
 
 	if (bios_capable) {
+		u8 supported;
+		has_mux = (hp_wmi_get_mux_supported_modes(&supported) == 0);
+
 		hp_wmi_platform_dev = platform_device_register_simple(
 			"hp-wmi", PLATFORM_DEVID_NONE, NULL, 0);
 		if (IS_ERR(hp_wmi_platform_dev)) {

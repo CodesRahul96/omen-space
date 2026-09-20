@@ -1,0 +1,11 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="cpuGrad" x1="0" y1="0" x2="24" y2="24" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#FB923C"/>
+            <stop offset="1" stop-color="#DC2626"/>
+        </linearGradient>
+    </defs>
+    <rect x="4" y="4" width="16" height="16" rx="2" fill="url(#cpuGrad)"/>
+    <rect x="7" y="7" width="10" height="10" rx="1" fill="#1E1E1E"/>
+    <path d="M9 7V4M12 7V4M15 7V4M9 20V17M12 20V17M15 20V17M4 9H7M4 12H7M4 15H7M17 9H20M17 12H20M17 15H20" stroke="url(#cpuGrad)" stroke-width="2" stroke-linecap="round"/>
+</svg>

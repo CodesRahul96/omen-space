@@ -2,8 +2,8 @@
 
 A Linux kernel module that adds manual fan speed control and keyboard RGB backlight support for HP Omen, Victus, and similar laptops.
 
-> Based on the upstream [hp-wmi driver](https://github.com/TUXOV/hp-wmi-fan-and-backlight-control) by [TUXOV](https://github.com/TUXOV). All credit for the original implementation goes to the upstream maintainer.
-
+> Based on the upstream [hp-wmi driver](https://github.com/TUXOV/hp-wmi-fan-and-backlight-control) by [TUXOV](https://github.com/TUXOV). 
+> **Extended and Maintained by Yunus Emre YILMAZ (@yunusemreyl)**. We have heavily modified and built upon this driver to add MUX switch support, Windows Key Lock, Undervolting, and advanced Omen integrations. All credit for the original implementation goes to the upstream maintainer.
 **Please ⭐ star the repo if this driver works for you!**
 
 ## Features

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=OMEN SPACE
+Comment=Control center for HP OMEN laptops
+Exec=omen-gui
+Icon=omenspace
+Terminal=false
+Type=Application
+Categories=System;Settings;HardwareSettings;
+Keywords=HP;OMEN;Fan;Performance;Control;
+StartupNotify=true
+StartupWMClass=org.hp.OmenSpace
+DBusActivatable=true

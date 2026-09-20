@@ -1,0 +1,17 @@
+# Assign hwmon and platform profile sysfs nodes to the omen-hw group for unprivileged fan and platform control
+
+# WMI based devices (legacy thermal_profile and platform_profile attributes if exposed)
+ACTION=="add|change", SUBSYSTEM=="platform", KERNEL=="hp-wmi|hp-omen", TEST=="thermal_profile", RUN+="/usr/bin/chgrp omen-hw /sys/devices/platform/%k/thermal_profile", RUN+="/usr/bin/chmod 0664 /sys/devices/platform/%k/thermal_profile"
+ACTION=="add|change", SUBSYSTEM=="platform", KERNEL=="hp-wmi|hp-omen", TEST=="platform_profile", RUN+="/usr/bin/chgrp omen-hw /sys/devices/platform/%k/platform_profile", RUN+="/usr/bin/chmod 0664 /sys/devices/platform/%k/platform_profile"
+
+# Kernel 6.12+ platform-profile class device
+ACTION=="add|change", SUBSYSTEM=="platform-profile", TEST=="profile", RUN+="/usr/bin/chgrp omen-hw /sys/class/platform-profile/%k/profile", RUN+="/usr/bin/chmod 0664 /sys/class/platform-profile/%k/profile"
+
+# Legacy ACPI platform profile endpoint
+ACTION=="add|change", SUBSYSTEM=="platform", KERNEL=="*-acpi-*", TEST=="/sys/firmware/acpi/platform_profile", RUN+="/usr/bin/chgrp omen-hw /sys/firmware/acpi/platform_profile", RUN+="/usr/bin/chmod 0664 /sys/firmware/acpi/platform_profile"
+
+# Hwmon devices (fan target and pwm controls)
+ACTION=="add|change", SUBSYSTEM=="hwmon", RUN+="/usr/bin/sh -c 'for f in /sys/class/hwmon/%k/pwm1* /sys/class/hwmon/%k/fan*_target; do [ -e \"$$f\" ] && chgrp omen-hw \"$$f\" && chmod 0664 \"$$f\"; done || true'"
+
+# Extra Omen features (RGB, MUX, etc)
+ACTION=="add|change", SUBSYSTEM=="platform", KERNEL=="hp-omen-extra", RUN+="/usr/bin/sh -c 'for f in /sys/devices/platform/hp-omen-extra/*; do [ -e \"$$f\" ] && chgrp omen-hw \"$$f\" && chmod g+rw \"$$f\"; done || true'"

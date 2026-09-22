@@ -731,7 +731,21 @@ impl RgbService {
         }
     }
     async fn apply_state(inner: Arc<Mutex<RgbInner>>) {
-        let g = inner.lock().await;
+        let mut g = inner.lock().await;
+
+        // detect() is only run once at startup and cached in `hw`. If the kernel
+        // module wasn't loaded (or its sysfs wasn't ready) at that moment, the
+        // daemon caches available=false forever and every RGB change silently
+        // no-ops while still returning "OK" and saving the config. Re-probe when
+        // the cached state is stale so a late/missing driver is picked up (and a
+        // disappeared driver is re-detected when it comes back).
+        if !g.hw.available {
+            g.hw = RgbHardware::detect();
+        } else if let Some(ref path) = g.hw.driver_path {
+            if !Path::new(path).exists() {
+                g.hw = RgbHardware::detect();
+            }
+        }
 
         let power     = g.config.power;
         let brightness = g.config.brightness;

@@ -227,8 +227,7 @@ impl LinuxCapabilityClassifier {
 		// 8BCD: ACPI WMAA/WHCM aborts (field-reported)
 		// 8C75: broken GETB zero-length CreateField → AE_AML_BUFFER_LIMIT on all WMID methods
 		// 878A: AE_AML_BUFFER_LIMIT flood → EC lockups
-		// 8DD0: AE_AML_BUFFER_LIMIT flood → RGB failure
-		matches!(board_id.trim().to_uppercase().as_str(), "8BCD" | "8C75" | "878A" | "8DD0")
+		matches!(board_id.trim().to_uppercase().as_str(), "8BCD" | "8C75" | "878A" )
 	}
 
     /// Returns true when the board_id appears in the community-verified list.

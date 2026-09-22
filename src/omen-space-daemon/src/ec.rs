@@ -72,7 +72,14 @@ impl LinuxEcController {
     }
 
     pub fn needs_ec_fallback(&self) -> bool {
-        self.board_id == "8E35" || self.board_id == "8A43" || self.board_id == "8A42"
+        Self::needs_ec_fallback_for_board(&self.board_id)
+    }
+
+    /// Static form used by sysmon for fan RPM fallback without a controller instance.
+    /// Board 8A42, 8A43, and 8E35 have no hwmon fan_input paths; EC registers
+    /// 0x2E/0x2F carry duty-cycle % that we use as an approximate RPM source.
+    pub fn needs_ec_fallback_for_board(board_id: &str) -> bool {
+        matches!(board_id.trim().to_uppercase().as_str(), "8E35" | "8A43" | "8A42")
     }
 
     pub fn has_ec_access(&self) -> bool {

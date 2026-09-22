@@ -27,8 +27,11 @@ RestrictNamespaces=true
 
 
 # Allow /sys writes for unprivileged fan/power control via udev rules
+# StateDirectory ensures /var/lib/omen-space-daemon/ is created by systemd so
+# fan_config.json can be written under ProtectSystem=strict (fixes #232)
 ProtectKernelTunables=no
-ReadWritePaths=/sys /etc/omen-space
+StateDirectory=omen-space-daemon
+ReadWritePaths=/sys /etc/omen-space /var/lib/omen-space-daemon
 
 [Install]
 WantedBy=multi-user.target

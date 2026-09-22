@@ -352,8 +352,45 @@ pub fn get_diagnostics_sync() -> SystemStats {
     serde_json::from_str(&json_str).unwrap_or_default()
 }
 
+// ── Daemon Status ─────────────────────────────────────────────────────────────
+
+/// Broadcast to subscribers whenever the daemon connection changes state.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DaemonStatus {
+    /// Daemon is reachable and sending telemetry.
+    Online,
+    /// Daemon connection was lost (crashed, stopped, or D-Bus dropped).
+    Offline,
+}
+
 static TELEMETRY_SENDERS: OnceLock<std::sync::Mutex<Vec<glib::Sender<SystemStats>>>> = OnceLock::new();
+static DAEMON_STATUS_SENDERS: OnceLock<std::sync::Mutex<Vec<glib::Sender<DaemonStatus>>>> = OnceLock::new();
 static TELEMETRY_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Subscribe to daemon online/offline transitions.
+/// The callback is invoked on the GTK main thread.
+#[allow(deprecated)]
+pub fn subscribe_daemon_status<F>(mut callback: F)
+where
+    F: FnMut(DaemonStatus) + 'static,
+{
+    let (tx, rx) = glib::MainContext::channel(glib::Priority::default());
+    rx.attach(None, move |status| {
+        callback(status);
+        glib::ControlFlow::Continue
+    });
+    let senders = DAEMON_STATUS_SENDERS.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+    senders.lock().unwrap_or_else(|e| e.into_inner()).push(tx);
+}
+
+fn broadcast_daemon_status(status: DaemonStatus) {
+    if let Some(mutex) = DAEMON_STATUS_SENDERS.get() {
+        let senders = mutex.lock().unwrap_or_else(|e| e.into_inner());
+        for tx in senders.iter() {
+            let _ = tx.send(status.clone());
+        }
+    }
+}
 
 #[allow(deprecated)]
 pub fn subscribe_telemetry<F>(mut callback: F)
@@ -373,10 +410,17 @@ where
         let rt = get_runtime();
         rt.spawn(async move {
             use zbus::export::futures_util::StreamExt;
+            #[allow(unused_assignments)]
+            let mut was_online = false;
             loop {
                 if let Ok(conn) = get_conn().await {
                     if let Ok(proxy) = SysMonProxy::new(&conn).await {
                         if let Ok(mut stream) = proxy.receive_telemetry_updated().await {
+                            // We successfully connected — broadcast Online if we weren't before
+                            if !was_online {
+                                was_online = true;
+                                broadcast_daemon_status(DaemonStatus::Online);
+                            }
                             while let Some(signal) = stream.next().await {
                                 if let Ok(args) = signal.args() {
                                     let json_str = args.json_stats();
@@ -392,13 +436,19 @@ where
                                     }
                                 }
                             }
+                            // Stream ended — daemon went offline
+                            was_online = false;
+                            broadcast_daemon_status(DaemonStatus::Offline);
                         }
                     }
+                } else {
+                    // Could not connect at all
+                    if was_online {
+                        was_online = false;
+                        broadcast_daemon_status(DaemonStatus::Offline);
+                    }
                 }
-                // If we reach this point, the stream has ended (daemon crashed, 
-                // daemon restarted, or DBus dropped). 
-                // We sleep for 3 seconds as a backoff before retrying to prevent 
-                // a tight CPU spin-loop while the daemon is offline.
+                // Backoff before retrying
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
         });

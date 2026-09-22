@@ -63,6 +63,7 @@ pub struct HardwareSpecs {
 }
 
 // ── Sensor Path Cache for Zero-Glob Overhead ────────────────
+#[derive(Clone)]
 struct SensorPaths {
     cpu_temp_path: Option<PathBuf>,
     cpu_pwr_path: Option<PathBuf>,
@@ -75,7 +76,7 @@ struct SensorPaths {
     rapl_energy_path: Option<PathBuf>,
 }
 
-static SENSOR_PATHS: OnceLock<SensorPaths> = OnceLock::new();
+static SENSOR_PATHS: Mutex<Option<(SensorPaths, std::time::Instant)>> = Mutex::new(None);
 static SPECS_CACHE: OnceLock<HardwareSpecs> = OnceLock::new();
 
 // State for Instantaneous CPU load delta calculation
@@ -515,7 +516,17 @@ pub fn get_safe_gpu_temp() -> f64 {
 /// Instantaneous, Zero-Fork Telemetry Fetch
 pub fn fetch_system_stats() -> SystemStats {
     let mut stats = SystemStats::default();
-    let paths = SENSOR_PATHS.get_or_init(init_sensor_paths);
+    let paths = {
+        let mut guard = SENSOR_PATHS.lock().unwrap_or_else(|e| e.into_inner());
+        let (cached_paths, last_update) = guard.get_or_insert_with(|| {
+            (init_sensor_paths(), std::time::Instant::now())
+        });
+        if (cached_paths.fan1_path.is_none() || cached_paths.fan2_path.is_none()) && last_update.elapsed().as_secs() > 5 {
+            *cached_paths = init_sensor_paths();
+            *last_update = std::time::Instant::now();
+        }
+        cached_paths.clone()
+    };
 
     // ── 1. Instantaneous CPU Load from /proc/stat (Delta Calculation) ──
     if let Ok(stat_content) = fs::read_to_string("/proc/stat") {
@@ -626,6 +637,39 @@ pub fn fetch_system_stats() -> SystemStats {
         if let Ok(s) = fs::read_to_string(p) {
             if let Ok(rpm) = s.trim().parse::<i32>() {
                 stats.fan2_rpm = rpm;
+            }
+        }
+    }
+    // ── EC duty-cycle RPM fallback for boards without hwmon fan_input ──────
+    // Board 8A42 (and siblings like 8A43, 8E35) have no fan1_input/fan2_input
+    // in the hp_wmi hwmon; the amdgpu sensor reports 0. Read EC registers 0x2E
+    // (fan1 duty %) and 0x2F (fan2 duty %) and approximate RPM as duty×50
+    // (range 0–5000, typical max ~4800 RPM). Tagged "(EC approx)" in the
+    // diagnostic report. Closes #233.
+    if stats.fan1_rpm == 0 && stats.fan2_rpm == 0 {
+        let board_id = std::fs::read_to_string("/sys/class/dmi/id/board_name")
+            .unwrap_or_default();
+        if crate::ec::LinuxEcController::needs_ec_fallback_for_board(board_id.trim()) {
+            use std::io::{Read, Seek, SeekFrom};
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .read(true)
+                .open("/sys/kernel/debug/ec/ec0/io")
+            {
+                let mut buf = [0u8; 1];
+                // Fan 1 duty %
+                if f.seek(SeekFrom::Start(0x2E)).is_ok()
+                    && f.read_exact(&mut buf).is_ok()
+                    && buf[0] > 0
+                {
+                    stats.fan1_rpm = (buf[0] as i32).saturating_mul(50);
+                }
+                // Fan 2 duty %
+                if f.seek(SeekFrom::Start(0x2F)).is_ok()
+                    && f.read_exact(&mut buf).is_ok()
+                    && buf[0] > 0
+                {
+                    stats.fan2_rpm = (buf[0] as i32).saturating_mul(50);
+                }
             }
         }
     }

@@ -194,6 +194,28 @@ do_build() {
             exit 1
         fi
     else
+        # FIX #234: Verify rustc >= 1.85 (required for edition 2024 transitive deps).
+        # toml_datetime 1.1.1+spec-1.1.0 uses edition 2024 internally; older toolchains
+        # fail with "feature edition2024 is required" — a confusing error for end-users.
+        _RUSTC_VER=$(rustc --version 2>/dev/null | awk '{print $2}')
+        _RUSTC_MAJOR=$(echo "$_RUSTC_VER" | cut -d. -f1)
+        _RUSTC_MINOR=$(echo "$_RUSTC_VER" | cut -d. -f2)
+        if [[ "$_RUSTC_MAJOR" -lt 1 ]] || { [[ "$_RUSTC_MAJOR" -eq 1 ]] && [[ "$_RUSTC_MINOR" -lt 85 ]]; }; then
+            echo ""
+            echo "❌ ERROR: Rust toolchain too old (found: $_RUSTC_VER, required: ≥ 1.85)"
+            echo ""
+            echo "   OMENSpace depends on packages that require Rust edition 2024."
+            echo "   Please upgrade your Rust toolchain:"
+            echo ""
+            echo "     rustup update stable"
+            echo ""
+            echo "   If you installed Rust via your distro package manager (apt/dnf/pacman),"
+            echo "   it may be out of date. Install the official toolchain via rustup instead:"
+            echo ""
+            echo "     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+            echo ""
+            exit 1
+        fi
         cargo build --release
     fi
 }

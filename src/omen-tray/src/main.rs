@@ -45,7 +45,7 @@ fn acquire_single_instance_lock() -> Option<std::fs::File> {
 }
 
 fn spawn_gui() {
-    let spawned = std::env::current_exe()
+    let spawned: Option<std::process::Child> = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|dir| dir.join("omen-gui")))
         .and_then(|gui_path| {
@@ -59,21 +59,31 @@ fn spawn_gui() {
             } else {
                 None
             }
+        })
+        .or_else(|| {
+            Command::new("omen-gui")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .ok()
+        })
+        .or_else(|| {
+            Command::new("/usr/bin/omen-gui")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .ok()
         });
 
-    if spawned.is_none() {
-        let _ = Command::new("omen-gui")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .or_else(|_| {
-                Command::new("/usr/bin/omen-gui")
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-            });
+    // Reap the child once it exits so it never lingers as a zombie.
+    // (Zombies previously accumulated and broke the OMEN-key toggle, which
+    // relies on pgrep -x omen-gui.)
+    if let Some(mut child) = spawned {
+        spawn_task(async move {
+            let _ = child.wait();
+        });
     }
 }
 

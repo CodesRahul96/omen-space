@@ -187,7 +187,7 @@ static const char *const omen_thermal_profile_boards[] = {
 	"878A", "878B", "878C", "87B5", "886B", "886C", "88C8", "88CB",
 	"88D1", "88D2", "88F4", "88F5", "88F6", "88F7", "88FD", "88FE",
 	"88FF", "8900", "8901", "8902", "8912", "8917", "8918", "8949",
-	"894A", "89EB", "8A15", "8A18", "8A42", "8A43", "8BAD", "8C58", "8E41",
+	"894A", "89EB", "8A15", "8A18", "8BAD", "8C58", "8E41",
 	/*
 	 * FIX: 8D41 (HP Omen Max), 8BAC (HP Omen 16-wf0xxx), 8BA9, 8E35,
 	 * 8C75 (HP Omen 17-db0xxx), 8C77, 8BCD removed from this list so
@@ -212,7 +212,6 @@ static const char *const omen_thermal_profile_force_v0_boards[] = {
  */
 static const char *const omen_timed_thermal_profile_boards[] = {
 	"8A15",
-	"8A42",
 	"8BAD",
 };
 
@@ -242,6 +241,14 @@ static const struct dmi_system_id victus_s_thermal_profile_boards[] __initconst 
 		/* 8A13: OMEN by HP Laptop 16-b1xxx */
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8A13")},
 		.driver_data = (void *)&omen_v1_legacy_thermal_params,
+	},
+	{
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8A42")},
+		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
+	},
+	{
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8A43")},
+		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
 	},
 	{
 		/* Victus 15-fb0xxx */

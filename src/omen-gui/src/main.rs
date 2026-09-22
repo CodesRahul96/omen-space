@@ -413,14 +413,14 @@ fn render_ui(window: &adw::ApplicationWindow, initial_page: &str) {
     content_box.append(&scroll);
 
     let tabs = [
-        ("omen-performance-symbolic", i18n::t("nav_performance"), "performance"),
-        ("omen-power-symbolic", i18n::t("nav_undervolt"), "undervolt"),
-        ("omen-gpu-symbolic", i18n::t("nav_mux"), "mux"),
-        ("omen-monitor-symbolic", i18n::t("nav_monitoring"), "monitoring"),
-        ("omen-lighting-symbolic", i18n::t("nav_lighting"), "rgb"),
-        ("omen-profiles-symbolic", i18n::t("nav_app_profiles"), "appprof"),
+        ("speedometer-symbolic", i18n::t("nav_performance"), "performance"),
+        ("gnome-power-manager-symbolic", i18n::t("nav_undervolt"), "undervolt"),
+        ("video-display-symbolic", i18n::t("nav_mux"), "mux"),
+        ("utilities-system-monitor-symbolic", i18n::t("nav_monitoring"), "monitoring"),
+        ("preferences-desktop-keyboard-symbolic", i18n::t("nav_lighting"), "rgb"),
+        ("applications-games-symbolic", i18n::t("nav_app_profiles"), "appprof"),
         ("preferences-desktop-display-symbolic", i18n::t("nav_overlay"), "overlay"),
-        ("omen-updater-symbolic", i18n::t("nav_updater"), "updater"),
+        ("software-update-available-symbolic", i18n::t("nav_updater"), "updater"),
     ];
 
     let mut sidebar_labels = Vec::new();
@@ -464,7 +464,7 @@ fn render_ui(window: &adw::ApplicationWindow, initial_page: &str) {
         .margin_top(11)
         .margin_bottom(11)
         .build();
-    s_box.append(&gtk::Image::builder().icon_name("omen-settings-symbolic").pixel_size(18).build());
+    s_box.append(&gtk::Image::builder().icon_name("preferences-system-symbolic").pixel_size(18).build());
     let settings_label = gtk::Label::builder().label(i18n::t("nav_settings")).margin_start(12).build();
     let s_revealer = gtk::Revealer::builder()
         .transition_type(gtk::RevealerTransitionType::SlideRight)

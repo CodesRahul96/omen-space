@@ -32,22 +32,37 @@ overlay-split-view > sidebar,
 }
 
 .navigation-sidebar row:selected,
-.navigation-sidebar > row:selected {
-    background-color: alpha(@accent_bg_color, 0.22) !important;
-    background-image: none !important;
-    color: @window_fg_color !important;
+.navigation-sidebar > row:selected,
+.navigation-sidebar row:selected:focus,
+.navigation-sidebar row:selected:active,
+.navigation-sidebar row.activatable:selected,
+.navigation-sidebar row.activatable:selected:hover,
+.navigation-sidebar row.activatable:selected:active,
+.navigation-sidebar row.activatable:selected:backdrop {
+    background-color: alpha(@accent_bg_color, 0.22);
+    background-image: none;
+    box-shadow: none;
+    outline-color: transparent;
+    color: @window_fg_color;
+}
+
+.navigation-sidebar row:selected *,
+.navigation-sidebar > row:selected * {
+    color: @window_fg_color;
 }
 
 .navigation-sidebar row:selected label,
-.navigation-sidebar > row:selected label {
-    color: @window_fg_color !important;
+.navigation-sidebar > row:selected label,
+.navigation-sidebar row:selected revealer label,
+.navigation-sidebar > row:selected revealer label {
+    color: @window_fg_color;
     font-weight: 600;
 }
 
 .navigation-sidebar row:selected image,
 .navigation-sidebar > row:selected image {
-    color: @window_fg_color !important;
-    opacity: 1 !important;
+    color: @window_fg_color;
+    opacity: 1;
     -gtk-icon-style: symbolic;
 }
 

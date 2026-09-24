@@ -133,12 +133,12 @@ fn main() {
         gtk::style_context_add_provider_for_display(
             &gtk::gdk::Display::default().unwrap(),
             &provider,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            gtk::STYLE_PROVIDER_PRIORITY_USER,
         );
         gtk::style_context_add_provider_for_display(
             &gtk::gdk::Display::default().unwrap(),
             &custom_provider,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            gtk::STYLE_PROVIDER_PRIORITY_USER,
         );
     });
     app.connect_activate(build_ui);

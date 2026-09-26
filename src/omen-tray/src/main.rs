@@ -7,7 +7,7 @@ use log::{error, info};
 use std::process::Command;
 use std::sync::OnceLock;
 use zbus::{Connection, Result as ZbusResult};
-
+use omen_types::*;
 static RUNTIME: OnceLock<tokio::runtime::Handle> = OnceLock::new();
 
 fn spawn_task<F>(f: F)
@@ -81,64 +81,58 @@ fn spawn_gui() {
     // (Zombies previously accumulated and broke the OMEN-key toggle, which
     // relies on pgrep -x omen-gui.)
     if let Some(mut child) = spawned {
-        spawn_task(async move {
+        std::thread::spawn(move || {
             let _ = child.wait();
         });
     }
 }
 
-fn ensure_overlay_running() {
-    let is_running = Command::new("pgrep")
+fn spawn_overlay() {
+    let is_running = std::process::Command::new("pgrep")
         .arg("-x")
         .arg("omen-overlay")
         .output()
         .map(|o| o.status.success() && !o.stdout.is_empty())
         .unwrap_or(false);
 
-    if !is_running {
-        let spawned = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|dir| dir.join("omen-overlay")))
-            .and_then(|overlay_path| {
-                if overlay_path.exists() {
-                    Command::new(overlay_path)
-                        .arg("--daemon")
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .spawn()
-                        .ok()
-                } else {
-                    None
-                }
-            });
+    if is_running {
+        let _ = std::process::Command::new("pkill").arg("-TERM").arg("-x").arg("omen-overlay").output();
+        return;
+    }
 
-        if spawned.is_none() {
-            let _ = Command::new("omen-overlay")
-                .arg("--daemon")
+    let spawned: Option<std::process::Child> = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|dir| dir.join("omen-overlay")))
+        .and_then(|overlay_path| {
+            if overlay_path.exists() {
+                std::process::Command::new(overlay_path)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .ok()
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            std::process::Command::new("omen-overlay")
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()
-                .or_else(|_| {
-                    Command::new("/usr/bin/omen-overlay")
-                        .arg("--daemon")
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .spawn()
-                });
-        }
+                .ok()
+        });
+
+    if let Some(mut child) = spawned {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
     }
 }
 
 async fn toggle_overlay() {
-    ensure_overlay_running();
-    if let Ok(conn) = get_conn().await {
-        if let Ok(proxy) = PlatformProxy::new(&conn).await {
-            let _ = proxy.toggle_overlay().await;
-        }
-    }
+    spawn_overlay();
 }
 
 #[derive(Debug, Clone)]
@@ -361,50 +355,18 @@ impl ksni::Tray for Tray {
     }
 }
 
-#[zbus::proxy(
-    interface = "org.hp.omen.Power",
-    default_service = "org.hp.omen",
-    default_path = "/org/hp/omen/Power"
-)]
-trait Power {
-    async fn set_power_profile(&self, profile: &str) -> zbus::Result<String>;
-    async fn get_power_profile(&self) -> zbus::Result<String>;
-}
 
-#[zbus::proxy(
-    interface = "org.hp.omen.Fan",
-    default_service = "org.hp.omen",
-    default_path = "/org/hp/omen/Fan"
-)]
-trait Fan {
-    async fn set_fan_mode(&self, mode: &str) -> zbus::Result<String>;
-    async fn get_fan_mode(&self) -> zbus::Result<String>;
-}
 
-#[zbus::proxy(
-    interface = "org.hp.omen.Mux",
-    default_service = "org.hp.omen",
-    default_path = "/org/hp/omen/Mux"
-)]
-trait Mux {
-    async fn set_gpu_mode(&self, mode: &str) -> zbus::Result<String>;
-    async fn get_gpu_info(&self) -> zbus::Result<String>;
-}
-
-#[zbus::proxy(
-    interface = "org.hp.omen.Platform",
-    default_service = "org.hp.omen",
-    default_path = "/org/hp/omen/Platform"
-)]
-trait Platform {
-    async fn toggle_overlay(&self) -> zbus::Result<String>;
-
-    #[zbus(signal)]
-    async fn macro_key_pressed(&self, key_name: &str) -> zbus::Result<()>;
-}
+static SHARED_CONN: tokio::sync::Mutex<Option<Connection>> = tokio::sync::Mutex::const_new(None);
 
 async fn get_conn() -> ZbusResult<Connection> {
-    Connection::system().await
+    let mut guard = SHARED_CONN.lock().await;
+    if let Some(conn) = &*guard {
+        return Ok(conn.clone());
+    }
+    let conn = Connection::system().await?;
+    *guard = Some(conn.clone());
+    Ok(conn)
 }
 
 async fn fetch_power_profile() -> Option<String> {
@@ -477,12 +439,14 @@ async fn set_gpu_mode(mode: &str) {
                 Ok(resp) => {
                     info!("GPU modu ayarlandı ({}) -> {}", mode, resp);
                     if resp.contains("REBOOT") {
-                        let _ = Command::new("notify-send")
+                        if let Ok(mut child) = Command::new("notify-send")
                             .arg("OMEN Space")
                             .arg("GPU modunun etkin olması için sistemi yeniden başlatmanız gerekiyor.")
                             .arg("-i")
                             .arg("dialog-warning")
-                            .spawn();
+                            .spawn() {
+                            std::thread::spawn(move || { let _ = child.wait(); });
+                        }
                     }
                 },
                 Err(e) => error!("GPU modu değiştirilemedi: {}", e),
@@ -524,7 +488,7 @@ async fn main() {
     let handle = service.handle();
     service.spawn();
 
-    ensure_overlay_running();
+    // No longer holding overlay in background
 
     // Listen for OMEN key presses from the zero-overhead hotkey monitor
     tokio::spawn(async move {
@@ -534,9 +498,13 @@ async fn main() {
                 if let Ok(mut stream) = proxy.receive_macro_key_pressed().await {
                     while let Some(msg) = stream.next().await {
                         if let Ok(args) = msg.args() {
-                            if *args.key_name() == "omen" {
-                                info!("OMEN tuşu algılandı, GUI başlatılıyor/kapatılıyor...");
+                            let key_name = args.key_name();
+                            if *key_name == "omen" {
+                                info!("OMEN key detected, launching GUI...");
                                 spawn_gui();
+                            } else if *key_name == "overlay" {
+                                info!("Overlay hotkey detected, toggling overlay...");
+                                spawn_overlay();
                             }
                         }
                     }

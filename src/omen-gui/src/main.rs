@@ -17,8 +17,6 @@ mod desktop_rgb_gui;
 mod updater;
 mod daemon_client;
 mod asset_resolver;
-mod overlay_page;
-
 const APP_ID: &str = "org.hp.OmenSpace";
 
 fn ensure_tray_running() {
@@ -380,11 +378,7 @@ fn render_ui(window: &adw::ApplicationWindow, initial_page: &str) {
     page_app_profiles.set_margin_end(m);
     page_app_profiles.set_margin_bottom(m);
 
-    let page_overlay = overlay_page::build_page(window);
-    page_overlay.set_margin_top(m);
-    page_overlay.set_margin_start(m);
-    page_overlay.set_margin_end(m);
-    page_overlay.set_margin_bottom(m);
+
 
     stack.add_named(&gen_box, Some("performance"));
     stack.add_named(&page_undervolt, Some("undervolt"));
@@ -392,7 +386,6 @@ fn render_ui(window: &adw::ApplicationWindow, initial_page: &str) {
     stack.add_named(&mon_content, Some("monitoring"));
     stack.add_named(&page_rgb, Some("rgb"));
     stack.add_named(&page_app_profiles, Some("appprof"));
-    stack.add_named(&page_overlay, Some("overlay"));
     stack.add_named(&page_updater, Some("updater"));
     stack.add_named(&page_settings, Some("settings"));
 
@@ -419,7 +412,6 @@ fn render_ui(window: &adw::ApplicationWindow, initial_page: &str) {
         ("utilities-system-monitor-symbolic", i18n::t("nav_monitoring"), "monitoring"),
         ("preferences-desktop-keyboard-symbolic", i18n::t("nav_lighting"), "rgb"),
         ("applications-games-symbolic", i18n::t("nav_app_profiles"), "appprof"),
-        ("preferences-desktop-display-symbolic", i18n::t("nav_overlay"), "overlay"),
         ("software-update-available-symbolic", i18n::t("nav_updater"), "updater"),
     ];
 

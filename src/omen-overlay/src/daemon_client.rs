@@ -1,68 +1,6 @@
-use zbus::proxy;
 use tokio::runtime::Runtime;
 use std::sync::OnceLock;
-use serde::{Serialize, Deserialize};
-
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
-pub struct SystemStats {
-    pub cpu_temp: i32,
-    pub cpu_load: f64,
-    pub cpu_pwr: f64,
-    pub fan_rpm: i32,
-    pub fan1_rpm: i32,
-    pub fan2_rpm: i32,
-    pub gpu_temp: i32,
-    pub gpu_load: f64,
-    pub gpu_pwr: f64,
-    pub ram_used_gb: f64,
-    pub ram_total_gb: f64,
-    pub ram_frac: f64,
-    pub total_pwr: f64,
-}
-
-// ── Proxies ──────────────────────────────────────────────────────────────────
-
-#[proxy(
-    interface = "org.hp.omen.Power",
-    default_service = "org.hp.omen",
-    default_path = "/org/hp/omen/Power"
-)]
-pub trait Power {
-    async fn set_power_profile(&self, profile: &str) -> zbus::Result<String>;
-    async fn get_power_profile(&self) -> zbus::Result<String>;
-}
-
-#[proxy(
-    interface = "org.hp.omen.Fan",
-    default_service = "org.hp.omen",
-    default_path = "/org/hp/omen/Fan"
-)]
-pub trait Fan {
-    async fn set_fan_mode(&self, mode: &str) -> zbus::Result<String>;
-    async fn get_fan_mode(&self) -> zbus::Result<String>;
-}
-
-#[proxy(
-    interface = "org.hp.omen.SysMon",
-    default_service = "org.hp.omen",
-    default_path = "/org/hp/omen/SysMon"
-)]
-pub trait SysMon {
-    #[zbus(signal)]
-    fn telemetry_updated(&self, json_stats: &str) -> zbus::Result<()>;
-}
-
-#[proxy(
-    interface = "org.hp.omen.Platform",
-    default_service = "org.hp.omen",
-    default_path = "/org/hp/omen/Platform"
-)]
-pub trait Platform {
-    async fn toggle_overlay(&self) -> zbus::Result<String>;
-
-    #[zbus(signal)]
-    fn macro_key_pressed(&self, key_name: &str) -> zbus::Result<()>;
-}
+pub use omen_types::*;
 
 // ── Runtime Management ───────────────────────────────────────────────────────
 
@@ -136,16 +74,9 @@ pub async fn get_fan_mode() -> String {
     "auto".to_string()
 }
 
-pub async fn send_toggle_overlay_signal() -> Result<(), zbus::Error> {
-    let conn = get_conn().await?;
-    let proxy = PlatformProxy::new(&conn).await?;
-    let _ = proxy.toggle_overlay().await;
-    Ok(())
-}
-
 // ── Telemetry and Hotkey Subscribers ─────────────────────────────────────────
 
-static TELEMETRY_SENDERS: OnceLock<std::sync::Mutex<Vec<glib::Sender<SystemStats>>>> = OnceLock::new();
+static TELEMETRY_SENDERS: std::sync::OnceLock<std::sync::Mutex<Vec<glib::Sender<SystemStats>>>> = std::sync::OnceLock::new();
 static TELEMETRY_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[allow(deprecated)]
@@ -179,51 +110,6 @@ where
                                             for tx in senders.iter() {
                                                 let _ = tx.send(stats.clone());
                                             }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            }
-        });
-    }
-}
-
-static HOTKEY_SENDERS: OnceLock<std::sync::Mutex<Vec<glib::Sender<String>>>> = OnceLock::new();
-static HOTKEY_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-#[allow(deprecated)]
-pub fn subscribe_hotkey<F>(mut callback: F)
-where
-    F: FnMut(String) + 'static,
-{
-    let (tx, rx) = glib::MainContext::channel(glib::Priority::default());
-    rx.attach(None, move |key_name| {
-        callback(key_name);
-        glib::ControlFlow::Continue
-    });
-
-    let senders = HOTKEY_SENDERS.get_or_init(|| std::sync::Mutex::new(Vec::new()));
-    senders.lock().unwrap_or_else(|e| e.into_inner()).push(tx);
-
-    if !HOTKEY_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        let rt = get_runtime();
-        rt.spawn(async move {
-            use futures::StreamExt;
-            loop {
-                if let Ok(conn) = get_conn().await {
-                    if let Ok(proxy) = PlatformProxy::new(&conn).await {
-                        if let Ok(mut stream) = proxy.receive_macro_key_pressed().await {
-                            while let Some(signal) = stream.next().await {
-                                if let Ok(args) = signal.args() {
-                                    let key = args.key_name().to_string();
-                                    if let Some(mutex) = HOTKEY_SENDERS.get() {
-                                        let senders = mutex.lock().unwrap_or_else(|e| e.into_inner());
-                                        for tx in senders.iter() {
-                                            let _ = tx.send(key.clone());
                                         }
                                     }
                                 }

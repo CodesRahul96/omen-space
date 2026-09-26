@@ -2,13 +2,13 @@
 
 pkgname=omen-space-git
 _pkgname=Omen-Space
-pkgver=2.1.1
+pkgver=2.1.2
 pkgrel=1
 pkgdesc="Advanced HP Omen/Victus laptop manager for Linux with RGB, Fan, and MUX control"
 arch=('x86_64')
 url="https://github.com/yunusemreyl/omen-space"
 license=('GPL')
-depends=('dkms' 'polkit' 'gtk4' 'libadwaita')
+depends=('dkms' 'polkit' 'gtk4' 'libadwaita' 'gtk4-layer-shell')
 makedepends=('git' 'gcc' 'make' 'pkg-config' 'rust')
 provides=('omen-space')
 conflicts=('omen-space' 'hp-laptop-manager' 'omenctl')

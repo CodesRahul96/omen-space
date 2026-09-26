@@ -597,8 +597,6 @@ impl RgbService {
     async fn software_animation_loop(inner: Arc<Mutex<RgbInner>>) {
         let mut last_per_key_colors: Vec<String> = Vec::new();
         loop {
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await; // ~20Hz
-
             let mut g = inner.lock().await;
             let has_per_key = g.hid_per_key.is_available();
             let has_old_sysfs = g.hw.available && !g.hw.is_new_driver;
@@ -608,9 +606,13 @@ impl RgbService {
             g.evdev_monitor.set_active(is_interactive);
 
             if !has_per_key && !has_old_sysfs {
+                drop(g);
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
                 continue;
             }
             if !g.config.power || g.config.mode == "static" || g.config.mode == "per_key_custom" { 
+                drop(g);
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                 continue; 
             }
 
@@ -728,6 +730,9 @@ impl RgbService {
                     }
                 }
             }
+
+            drop(g);
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         }
     }
     async fn apply_state(inner: Arc<Mutex<RgbInner>>) {

@@ -15,14 +15,14 @@ install_dependencies() {
     echo "====================================="
     if command -v dnf &> /dev/null; then
         echo "Detected Fedora/RHEL. Installing dependencies via dnf..."
-        dnf install -y gcc pkgconf-pkg-config gtk4-devel libadwaita-devel systemd-devel make kernel-devel kernel-headers dbus-devel dkms hidapi-devel
+        dnf install -y gcc pkgconf-pkg-config gtk4-devel libadwaita-devel gtk4-layer-shell-devel systemd-devel make kernel-devel kernel-headers dbus-devel dkms hidapi-devel
     elif command -v apt-get &> /dev/null; then
         echo "Detected Debian/Ubuntu. Installing dependencies via apt..."
         apt-get update
-        apt-get install -y build-essential pkg-config libgtk-4-dev libadwaita-1-dev libsystemd-dev libdbus-1-dev dkms linux-headers-$(uname -r) libhidapi-dev
+        apt-get install -y build-essential pkg-config libgtk-4-dev libadwaita-1-dev libgtk4-layer-shell-dev libsystemd-dev libdbus-1-dev dkms linux-headers-$(uname -r) libhidapi-dev
     elif command -v pacman &> /dev/null; then
         echo "Detected Arch Linux. Installing dependencies via pacman..."
-        local ARCH_PKGS=(gcc pkgconf gtk4 libadwaita systemd dbus base-devel dkms hidapi)
+        local ARCH_PKGS=(gcc pkgconf gtk4 libadwaita gtk4-layer-shell systemd dbus base-devel dkms hidapi)
 
         # Only install headers if not already available for the running kernel
         if [ ! -d "/lib/modules/$(uname -r)/build" ] && [ ! -d "/usr/lib/modules/$(uname -r)/build" ]; then
@@ -58,10 +58,24 @@ install_dependencies() {
                 fi
             fi
         fi
-        pacman -S --needed --noconfirm "${ARCH_PKGS[@]}" || true
+        # FIX #5: Hard guard against partial systemd upgrade (#211 adjacent).
+        # pacman -S --needed systemd dbus with stale sync DB + old installed = partial
+        # upgrade = next boot → systemd crash → emergency mode. Require user to run
+        # a FULL pacman -Syu first.
+        if command -v pacman >/dev/null 2>&1; then
+            echo "=> Arch-based system detected: verifying packages are fully up-to-date to avoid partial systemd upgrade risk"
+            if pacman -Qu 2>/dev/null | grep -qE '^(systemd|dbus|glibc|linux-cachyos|linux) '; then
+                echo "ERROR: Your system has pending core updates that would cause a partial upgrade. Run:"
+                echo " sudo pacman -Syu"
+                echo "then reboot (to confirm updated systemd/kernel boots fine) and re-run setup.sh."
+                exit 1
+            fi
+            # Now safe to install packages
+            pacman -S --needed --noconfirm "${ARCH_PKGS[@]}" || true
+        fi
     elif command -v zypper &> /dev/null; then
         echo "Detected openSUSE. Installing dependencies via zypper..."
-        zypper install -y gcc make pkgconfig gtk4-devel libadwaita-devel systemd-devel dbus-1-devel kernel-devel dkms libhidapi-devel
+        zypper install -y gcc make pkgconfig gtk4-devel libadwaita-devel gtk4-layer-shell-devel systemd-devel dbus-1-devel kernel-devel dkms libhidapi-devel
     else
         echo "Warning: Unsupported package manager. Please ensure gcc, make, pkgconfig, gtk4, libadwaita, and hidapi dev packages are installed."
     fi

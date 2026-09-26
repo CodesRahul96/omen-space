@@ -1,11 +1,48 @@
 use gtk::prelude::*;
+use libadwaita as adw;
+use adw::prelude::*;
 use std::rc::Rc;
 use std::cell::RefCell;
 use crate::daemon_client::{self, SystemStats};
+// ── Overlay config (position, hotkey, margin) ─────────────────────────────────
+
+#[derive(Clone)]
+struct OverlayConfig {
+    halign: String,  // "start" | "center" | "end"
+    valign: String,  // "start" | "center" | "end"
+    margin: i32,
+    hotkey: String,
+}
+
+impl Default for OverlayConfig {
+    fn default() -> Self {
+        Self {
+            halign: "end".into(),
+            valign: "start".into(),
+            margin: 24,
+            hotkey: "Shift+F2".into(),
+        }
+    }
+}
+
+fn load_overlay_config() -> OverlayConfig {
+    let mut cfg = OverlayConfig::default();
+    if let Ok(home) = std::env::var("HOME") {
+        let path = format!("{}/.config/omenspace/settings.json", home);
+        if let Ok(s) = std::fs::read_to_string(&path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+                if let Some(h) = v.get("overlay_halign").and_then(|x| x.as_str()) { cfg.halign = h.to_string(); }
+                if let Some(v2) = v.get("overlay_valign").and_then(|x| x.as_str()) { cfg.valign = v2.to_string(); }
+                if let Some(m) = v.get("overlay_margin").and_then(|x| x.as_i64()) { cfg.margin = m as i32; }
+                if let Some(hk) = v.get("overlay_hotkey").and_then(|x| x.as_str()) { cfg.hotkey = hk.to_string(); }
+            }
+        }
+    }
+    cfg
+}
 
 pub struct OverlayWindow {
-    pub window: gtk::Window,
-    last_toggle: Rc<RefCell<std::time::Instant>>,
+    pub window: adw::ApplicationWindow,
     active_power: Rc<RefCell<String>>,
     active_fan: Rc<RefCell<String>>,
     power_btns: Rc<RefCell<Vec<(String, gtk::Button)>>>,
@@ -14,12 +51,16 @@ pub struct OverlayWindow {
     gpu_val_label: gtk::Label,
     fan_val_label: gtk::Label,
     ram_val_label: gtk::Label,
+    tag_label: gtk::Label,
 }
 
 impl OverlayWindow {
-    pub fn new() -> Rc<Self> {
-        let window = gtk::Window::builder()
-            .title("OMEN Quick Overlay")
+    pub fn new(app: &adw::Application) -> Rc<Self> {
+        let cfg = load_overlay_config();
+
+        let window = adw::ApplicationWindow::builder()
+            .application(app)
+            .title(&crate::i18n::t("title"))
             .decorated(false)
             .resizable(false)
             .default_width(680)
@@ -27,16 +68,6 @@ impl OverlayWindow {
             .css_classes(["omen-overlay-window"])
             .build();
 
-        window.connect_close_request(|win| {
-            win.set_visible(false);
-            glib::Propagation::Stop
-        });
-
-        let last_toggle = Rc::new(RefCell::new(
-            std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_secs(10))
-                .unwrap_or_else(std::time::Instant::now),
-        ));
         let active_power = Rc::new(RefCell::new("Default".to_string()));
         let active_fan = Rc::new(RefCell::new("auto".to_string()));
         let power_btns = Rc::new(RefCell::new(Vec::new()));
@@ -63,15 +94,16 @@ impl OverlayWindow {
         header.append(&brand_icon);
 
         let title_label = gtk::Label::builder()
-            .label("OMEN QUICK CONTROL")
+            .label(&crate::i18n::t("title"))
             .css_classes(["overlay-title"])
             .hexpand(true)
             .halign(gtk::Align::Start)
             .build();
         header.append(&title_label);
 
+        // Show configured hotkey in header tag
         let tag_label = gtk::Label::builder()
-            .label("SHIFT + F2")
+            .label(&cfg.hotkey.to_uppercase())
             .css_classes(["overlay-brand-tag"])
             .build();
         header.append(&tag_label);
@@ -80,9 +112,9 @@ impl OverlayWindow {
             .icon_name("window-close-symbolic")
             .css_classes(["overlay-close-btn"])
             .build();
-        let win_clone = window.clone();
+        let app_c = app.clone();
         close_btn.connect_clicked(move |_| {
-            win_clone.set_visible(false);
+            app_c.quit();
         });
         header.append(&close_btn);
 
@@ -95,7 +127,7 @@ impl OverlayWindow {
             .build();
 
         let perf_label = gtk::Label::builder()
-            .label("Performance Mode")
+            .label(&crate::i18n::t("perf_mode"))
             .css_classes(["section-label"])
             .halign(gtk::Align::Start)
             .build();
@@ -108,9 +140,9 @@ impl OverlayWindow {
             .build();
 
         let power_modes = [
-            ("Quiet", "1", "Eco / Silent", "active-eco", "power-profile-power-saver-symbolic"),
-            ("Default", "2", "Balanced", "active", "power-profile-balanced-symbolic"),
-            ("Performance", "3", "Max Power & Clock", "active-perf", "power-profile-performance-symbolic"),
+            (crate::i18n::t("quiet"), "1", crate::i18n::t("eco_silent"), "active-eco", "power-profile-power-saver-symbolic"),
+            (crate::i18n::t("default"), "2", crate::i18n::t("balanced"), "active", "power-profile-balanced-symbolic"),
+            (crate::i18n::t("performance"), "3", crate::i18n::t("max_power"), "active-perf", "power-profile-performance-symbolic"),
         ];
 
         let mut p_btns = Vec::new();
@@ -137,7 +169,7 @@ impl OverlayWindow {
             top_row.append(&icon);
 
             let lbl = gtk::Label::builder()
-                .label(*name)
+                .label(name)
                 .css_classes(["mode-name"])
                 .hexpand(true)
                 .halign(gtk::Align::Start)
@@ -153,7 +185,7 @@ impl OverlayWindow {
             inner.append(&top_row);
 
             let sub = gtk::Label::builder()
-                .label(*desc)
+                .label(desc)
                 .css_classes(["mode-desc"])
                 .halign(gtk::Align::Start)
                 .build();
@@ -177,7 +209,7 @@ impl OverlayWindow {
             .build();
 
         let fan_label = gtk::Label::builder()
-            .label("Fan Mode")
+            .label(&crate::i18n::t("fan_mode"))
             .css_classes(["section-label"])
             .halign(gtk::Align::Start)
             .build();
@@ -190,9 +222,9 @@ impl OverlayWindow {
             .build();
 
         let fan_modes = [
-            ("auto", "Q", "Auto (Dynamic)", "active", "weather-clear-symbolic"),
-            ("max", "W", "Max (100% Turbo)", "active-turbo", "weather-storm-symbolic"),
-            ("custom", "E", "Custom Preset", "active", "emblem-system-symbolic"),
+            ("auto", "Q", crate::i18n::t("auto"), "active", "weather-clear-symbolic"),
+            ("max", "W", crate::i18n::t("max"), "active-turbo", "weather-storm-symbolic"),
+            ("custom", "E", crate::i18n::t("custom"), "active", "emblem-system-symbolic"),
         ];
 
         let mut f_btns = Vec::new();
@@ -219,7 +251,7 @@ impl OverlayWindow {
             top_row.append(&icon);
 
             let lbl = gtk::Label::builder()
-                .label(*title)
+                .label(title)
                 .css_classes(["mode-name"])
                 .hexpand(true)
                 .halign(gtk::Align::Start)
@@ -235,10 +267,10 @@ impl OverlayWindow {
             inner.append(&top_row);
 
             let sub = gtk::Label::builder()
-                .label(match *mode_key {
-                    "auto" => "Adaptive thermal curve",
-                    "max" => "Full speed cooling",
-                    _ => "User curve profile",
+                .label(&match *mode_key {
+                    "auto" => crate::i18n::t("auto_desc"),
+                    "max" => crate::i18n::t("max_desc"),
+                    _ => crate::i18n::t("custom_desc"),
                 })
                 .css_classes(["mode-desc"])
                 .halign(gtk::Align::Start)
@@ -279,7 +311,7 @@ impl OverlayWindow {
 
         // Fan chip
         let fan_chip = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).build();
-        fan_chip.append(&gtk::Label::builder().label("FANS").css_classes(["telem-chip-title"]).halign(gtk::Align::Start).build());
+        fan_chip.append(&gtk::Label::builder().label(&crate::i18n::t("fans")).css_classes(["telem-chip-title"]).halign(gtk::Align::Start).build());
         let fan_val = gtk::Label::builder().label("── RPM").css_classes(["telem-chip-val"]).halign(gtk::Align::Start).build();
         fan_chip.append(&fan_val);
         telemetry_box.append(&fan_chip);
@@ -303,29 +335,28 @@ impl OverlayWindow {
 
         let hint1 = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(4).build();
         hint1.append(&gtk::Label::builder().label("1-3").css_classes(["shortcut-key"]).build());
-        hint1.append(&gtk::Label::builder().label("Power Mode").css_classes(["shortcut-hint"]).build());
+        hint1.append(&gtk::Label::builder().label(&crate::i18n::t("perf_mode")).css_classes(["shortcut-hint"]).build());
         footer.append(&hint1);
 
         let hint2 = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(4).build();
         hint2.append(&gtk::Label::builder().label("Q/W/E").css_classes(["shortcut-key"]).build());
-        hint2.append(&gtk::Label::builder().label("Fan Mode").css_classes(["shortcut-hint"]).build());
+        hint2.append(&gtk::Label::builder().label(&crate::i18n::t("fan_mode")).css_classes(["shortcut-hint"]).build());
         footer.append(&hint2);
 
         let hint3 = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(4).build();
         hint3.append(&gtk::Label::builder().label("ESC").css_classes(["shortcut-key"]).build());
-        hint3.append(&gtk::Label::builder().label("Close").css_classes(["shortcut-hint"]).build());
+        hint3.append(&gtk::Label::builder().label(&crate::i18n::t("close")).css_classes(["shortcut-hint"]).build());
         footer.append(&hint3);
 
         root_box.append(&footer);
 
-        window.set_child(Some(&root_box));
+        window.set_content(Some(&root_box));
 
         *power_btns.borrow_mut() = p_btns;
         *fan_btns.borrow_mut() = f_btns;
 
         let overlay = Rc::new(Self {
             window,
-            last_toggle,
             active_power,
             active_fan,
             power_btns,
@@ -334,8 +365,11 @@ impl OverlayWindow {
             gpu_val_label: gpu_val,
             fan_val_label: fan_val,
             ram_val_label: ram_val,
+            tag_label,
         });
 
+        overlay.apply_position(&cfg);
+        overlay.refresh_initial_state();
         overlay.setup_interactions();
         overlay
     }
@@ -364,19 +398,9 @@ impl OverlayWindow {
         let this = self.clone();
         key_controller.connect_key_pressed(move |_, key, _keycode, state| {
             let key_val = key.name().unwrap_or_default().to_lowercase();
-            let has_shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+            let _has_shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
 
-            // Shift + F2 toggles overlay
-            if key_val == "f2" && has_shift {
-                this.toggle_visibility();
-                return glib::Propagation::Stop;
-            }
-
-            // Escape closes overlay
-            if key_val == "escape" {
-                this.window.set_visible(false);
-                return glib::Propagation::Stop;
-            }
+            // Escape/F2 triggers app quit, handled in main.rs key controller
 
             match key_val.as_str() {
                 "1" | "kp_1" => {
@@ -512,19 +536,9 @@ impl OverlayWindow {
         });
     }
 
-    pub fn toggle_visibility(self: &Rc<Self>) {
-        let mut last = self.last_toggle.borrow_mut();
-        if last.elapsed() < std::time::Duration::from_millis(300) {
-            return;
-        }
-        *last = std::time::Instant::now();
-
-        if self.window.is_visible() {
-            self.window.set_visible(false);
-        } else {
-            self.refresh_initial_state();
-            self.window.set_visible(true);
-            self.window.present();
-        }
+    fn apply_position(&self, cfg: &OverlayConfig) {
+        self.tag_label.set_label(&cfg.hotkey.to_uppercase());
+        // Positioning is blocked by KDE Wayland focus stealing / layer shell rules.
+        // Thus, the window will appear in the center by default as a standard undecorated window.
     }
 }

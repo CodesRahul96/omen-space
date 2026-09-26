@@ -47,6 +47,7 @@ pub struct FanState {
     pub last_written_duty: Option<u32>,
     pub last_written_duty_time: Option<std::time::Instant>,
     pub last_hw_detect_attempt: std::time::Instant,
+    pub signal_ctx: Option<zbus::SignalContext<'static>>,
 }
 
 #[derive(Clone)]
@@ -104,6 +105,7 @@ impl FanService {
             last_written_duty: None,
             last_written_duty_time: None,
             last_hw_detect_attempt: std::time::Instant::now(),
+            signal_ctx: None,
         };
         Self::detect_hardware(&mut state).await;
         
@@ -140,6 +142,14 @@ impl FanService {
         
         Ok(service)
     }
+
+    pub fn set_signal_ctx(&self, ctx: zbus::SignalContext<'static>) {
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            state.lock().await.signal_ctx = Some(ctx);
+        });
+    }
+
 
     async fn _find_hwmon() -> Option<PathBuf> {
         if let Ok(entries) = glob("/sys/class/hwmon/hwmon*/name") {
@@ -470,6 +480,11 @@ impl FanService {
                     state.thermal_protection_entered_at = std::time::Instant::now();
                     state.pre_protection_mode = Some(state.mode.clone());
                     Self::set_mode_internal(&mut state, "max").await;
+                    
+                    if let Some(ctx) = state.signal_ctx.clone() {
+                        let _ = Self::thermal_protection_alert(&ctx, true).await;
+                    }
+                    
                     tokio::spawn(async move {
                         let msg = if std::env::var("LANG").unwrap_or_default().starts_with("tr") {
                             "Yüksek sıcaklıklardan cihazınızı korumak için max fan modu aktif edildi."
@@ -493,6 +508,10 @@ impl FanService {
                         state.last_written_duty = None;
                         state.last_auto_pct = 0;
                         Self::set_mode_internal(&mut state, &restore).await;
+                        
+                        if let Some(ctx) = state.signal_ctx.clone() {
+                            let _ = Self::thermal_protection_alert(&ctx, false).await;
+                        }
                         
                         let restore_msg = restore.clone();
                         tokio::spawn(async move {
@@ -742,6 +761,28 @@ impl FanService {
             _ => return false,
         };
 
+        // FIX #3: Hard-block software fan modes (auto/custom/performance) when the
+        // board's capability DB says WMI fan writes are unsupported. On abort-prone
+        // boards (878A etc.), falling through to pwm1_enable=1 causes endless 0x2E
+        // floods. Force EC (BIOS thermal) mode with user notification instead.
+        let board_id = std::fs::read_to_string("/sys/class/dmi/id/board_name").unwrap_or_default();
+        let board_id = board_id.trim();
+        let caps = crate::capabilities::detect(board_id, "", "");
+        
+        let only_ec_safe = caps.supports_fan_control_ec && !caps.supports_fan_control_wmi;
+        if only_ec_safe && matches!(mode, "auto" | "custom" | "performance") {
+            warn!("Board {} supports only EC fan control (WMI 0x2E writes proven rejected by BIOS). Forcing EC mode.", board_id);
+            // (a) Override mode
+            let _ = Box::pin(Self::set_mode_internal(state, "ec")).await;
+            // (b) User-visible notification
+            crate::notifier::DesktopNotifier::send_notification(
+                "Omen Space",
+                "Auto/Custom/Performance fan modes are not supported on your OMEN BIOS. Fan control switched to Hardware (EC) mode.",
+                0,
+            ).await;
+            return true;
+        }
+
         if mode == "ec" {
             tokio::spawn(async move {
                 DesktopNotifier::send_notification("Omen Space", "Donanım (EC) kontrolü devredildi. Watchdog mekanizması nedeniyle fanların BIOS'a teslim edilmesi 120 saniye kadar sürebilir.", 0).await;
@@ -959,6 +1000,12 @@ impl FanService {
             Self::save_config(mode_to_save, custom_curve_json).await;
             "OK".to_string()
         } else {
+            let err_msg = format!(
+                "Fan modu '{}' uygulanamadı. EC (Embedded Controller) komut arayüzüne erişilemiyor.",
+                mode
+            );
+            warn!("{}", err_msg);
+            crate::notifier::DesktopNotifier::notify_error("Fan Modu Değiştirilemedi", &err_msg).await;
             "FAIL".to_string()
         }
     }
@@ -989,6 +1036,10 @@ impl FanService {
             Self::save_config(mode_to_save, custom_curve_json).await;
             "OK".to_string()
         } else {
+            crate::notifier::DesktopNotifier::notify_error(
+                "Özel Fan Eğrisi Kaydedilemedi",
+                "Gönderilen eğri verisi geçersiz JSON formatında. Lütfen tekrar deneyin.",
+            ).await;
             "FAIL".to_string()
         }
     }
@@ -1011,6 +1062,9 @@ impl FanService {
     async fn ping(&self) -> String {
         "pong".to_string()
     }
+    
+    #[zbus(signal)]
+    pub async fn thermal_protection_alert(ctxt: &zbus::SignalContext<'_>, active: bool) -> zbus::Result<()>;
 }
 
 #[cfg(test)]
@@ -1019,7 +1073,7 @@ mod tests {
 
     #[test]
     fn test_golden_vectors() {
-        let vectors = serde_json::from_str::<serde_json::Value>(include_str!("../tests/fixtures/vectors.json")).unwrap();
+        let vectors = serde_json::from_str::<serde_json::Value>(include_str!("../../tests/fixtures/vectors.json")).unwrap();
         for test_case in vectors.as_array().unwrap() {
             let mut points = Vec::new();
             for pt in test_case["curve"].as_array().unwrap() {

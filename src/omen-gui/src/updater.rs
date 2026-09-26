@@ -195,10 +195,20 @@ fn show_app_update_modal(window: &adw::ApplicationWindow) {
     glib::spawn_future_local(async move {
         let (tx, rx) = tokio::sync::oneshot::channel();
         crate::daemon_client::get_runtime().spawn(async move {
-            let output = tokio::process::Command::new("curl")
-                .args(["-s", "https://api.github.com/repos/yunusemreyl/omen-space/releases/latest"])
+            let mut output = tokio::process::Command::new("curl")
+                .args(["-s", "https://api.github.com/repos/CodesRahul96/omen-space/releases/latest"])
                 .output()
                 .await;
+            if let Ok(ref out) = output {
+                if let Ok(json_str) = String::from_utf8(out.stdout.clone()) {
+                    if json_str.contains("Not Found") {
+                        output = tokio::process::Command::new("curl")
+                            .args(["-s", "https://api.github.com/repos/yunusemreyl/omen-space/releases/latest"])
+                            .output()
+                            .await;
+                    }
+                }
+            }
             let _ = tx.send(output);
         });
 

@@ -10,6 +10,10 @@ use crate::notifier::DesktopNotifier;
 use std::sync::OnceLock;
 
 static SENSOR_TEMP_PATHS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+pub const THERMAL_PROTECTION_TRIGGER_TEMP: f64 = 95.0;
+pub const THERMAL_PROTECTION_RECOVER_TEMP: f64 = 82.0;
+pub const AUTO_PEAK_HOLD_SECS: u64 = 15;
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct CurvePoint(pub f64, pub f64); // [Temp, Pct]
 
@@ -272,6 +276,23 @@ impl FanService {
         out
     }
 
+    pub fn is_ignored_sensor_device(name: &str, vendor: &str, class: &str) -> bool {
+        let name_lower = name.trim().to_lowercase();
+        if name_lower.contains("nvidia")
+            || name_lower.contains("nouveau")
+            || name_lower.contains("nvme")
+            || name_lower.contains("mt79")
+            || name_lower.contains("iwl")
+            || name_lower.contains("wireless")
+            || name_lower.contains("wifi")
+        {
+            return true;
+        }
+        let v = vendor.trim();
+        let c = class.trim();
+        v.eq_ignore_ascii_case("0x10de") && c.starts_with("0x03")
+    }
+
     async fn get_max_temp() -> f64 {
         tokio::task::spawn_blocking(|| {
             let paths = SENSOR_TEMP_PATHS.get_or_init(|| {
@@ -280,15 +301,9 @@ impl FanService {
                     for entry in entries.filter_map(Result::ok) {
                         let should_ignore = if let Some(parent) = entry.parent() {
                             let name = std::fs::read_to_string(parent.join("name")).unwrap_or_default();
-                            let name = name.trim().to_lowercase();
-                            if name.contains("nvidia") || name.contains("nouveau") || name.contains("nvme") || name.contains("mt79") || name.contains("iwl") || name.contains("wireless") {
-                                true
-                            } else {
-                                // Match PCI display controller (class 0x03*) from NVIDIA (vendor 0x10de)
-                                let vendor = std::fs::read_to_string(parent.join("device/vendor")).unwrap_or_default();
-                                let class = std::fs::read_to_string(parent.join("device/class")).unwrap_or_default();
-                                vendor.trim().eq_ignore_ascii_case("0x10de") && class.trim().starts_with("0x03")
-                            }
+                            let vendor = std::fs::read_to_string(parent.join("device/vendor")).unwrap_or_default();
+                            let class = std::fs::read_to_string(parent.join("device/class")).unwrap_or_default();
+                            Self::is_ignored_sensor_device(&name, &vendor, &class)
                         } else {
                             false
                         };
@@ -449,8 +464,8 @@ impl FanService {
                 let mut state = self.state.lock().await;
                 
                 // Thermal Protection Logic ALWAYS uses raw temp for safety
-                if state.thermal_protection_enabled && temp > 95.0 && !state.thermal_protection_active {
-                    warn!("Temperature exceeded 95°C ({}°C). Activating Thermal Protection Mode (Max Fan).", temp);
+                if state.thermal_protection_enabled && temp > THERMAL_PROTECTION_TRIGGER_TEMP && !state.thermal_protection_active {
+                    warn!("Temperature exceeded {}°C ({}°C). Activating Thermal Protection Mode (Max Fan).", THERMAL_PROTECTION_TRIGGER_TEMP, temp);
                     state.thermal_protection_active = true;
                     state.thermal_protection_entered_at = std::time::Instant::now();
                     state.pre_protection_mode = Some(state.mode.clone());
@@ -469,7 +484,7 @@ impl FanService {
                         DesktopNotifier::send_notification(title, msg, 1).await;
                     });
                 } else if state.thermal_protection_active {
-                    if !state.thermal_protection_enabled || temp <= 82.0 {
+                    if !state.thermal_protection_enabled || temp <= THERMAL_PROTECTION_RECOVER_TEMP {
                         let elapsed = state.thermal_protection_entered_at.elapsed().as_secs_f64();
                         
                         info!("Temperature dropped to {}°C (active for {:.1}s) or protection disabled. Deactivating Thermal Protection Mode.", temp, elapsed);
@@ -600,17 +615,17 @@ impl FanService {
                         state.last_auto_pct_time = std::time::Instant::now();
                     } else if desired_pct < state.last_auto_pct {
                         // Decrease requested, hold peak briefly for thermal stability
-                        if state.last_auto_pct_time.elapsed().as_secs() < 15 {
+                        if state.last_auto_pct_time.elapsed().as_secs() < AUTO_PEAK_HOLD_SECS {
                             desired_pct = state.last_auto_pct;
                         } else {
                             state.last_auto_pct = desired_pct;
                         }
                     }
 
-                    // 2. Minimum Runtime (15s)
+                    // 2. Minimum Runtime (AUTO_PEAK_HOLD_SECS)
                     if desired_pct == 0 {
                         if let Some(turned_on_at) = state.auto_fan_activated_at {
-                            if turned_on_at.elapsed().as_secs() < 15 {
+                            if turned_on_at.elapsed().as_secs() < AUTO_PEAK_HOLD_SECS {
                                 desired_pct = 38;
                                 state.last_auto_pct = 38;
                             } else {
@@ -656,7 +671,7 @@ impl FanService {
                         state.last_perf_pct = desired_pct;
                         state.last_perf_pct_time = std::time::Instant::now();
                     } else if desired_pct < state.last_perf_pct {
-                        if state.last_perf_pct_time.elapsed().as_secs() < 15 {
+                        if state.last_perf_pct_time.elapsed().as_secs() < AUTO_PEAK_HOLD_SECS {
                             desired_pct = state.last_perf_pct;
                         } else {
                             state.last_perf_pct = desired_pct;
@@ -1053,5 +1068,52 @@ mod tests {
             2,
             std::time::Duration::from_secs(30),
         ));
+    }
+
+    #[test]
+    fn test_is_ignored_sensor_device() {
+        // Must ignore Wi-Fi, NVMe, and discrete GPU sensors when measuring CPU temp
+        assert!(FanService::is_ignored_sensor_device("nvme", "", ""));
+        assert!(FanService::is_ignored_sensor_device("mt7921_phy0", "", ""));
+        assert!(FanService::is_ignored_sensor_device("iwlwifi_1", "", ""));
+        assert!(FanService::is_ignored_sensor_device("wireless", "", ""));
+        assert!(FanService::is_ignored_sensor_device("wifi_core", "", ""));
+        assert!(FanService::is_ignored_sensor_device("nvidia", "", ""));
+        assert!(FanService::is_ignored_sensor_device("nouveau", "", ""));
+        assert!(FanService::is_ignored_sensor_device("temp_sensor", "0x10de", "0x030000"));
+
+        // Must NOT ignore real CPU / motherboard hwmon sensors
+        assert!(!FanService::is_ignored_sensor_device("coretemp", "", ""));
+        assert!(!FanService::is_ignored_sensor_device("k10temp", "", ""));
+        assert!(!FanService::is_ignored_sensor_device("zenpower", "", ""));
+        assert!(!FanService::is_ignored_sensor_device("acpitz", "", ""));
+    }
+
+    #[test]
+    fn test_thermal_protection_constants() {
+        assert!(THERMAL_PROTECTION_TRIGGER_TEMP >= 95.0, "Trigger must protect at critical temp");
+        assert!(THERMAL_PROTECTION_RECOVER_TEMP <= 85.0, "Recover must allow normal operation");
+        assert!(THERMAL_PROTECTION_TRIGGER_TEMP > THERMAL_PROTECTION_RECOVER_TEMP, "Trigger must be higher than recover");
+        assert_eq!(AUTO_PEAK_HOLD_SECS, 15, "Peak hold must be responsive");
+    }
+
+    #[test]
+    fn test_evaluate_spline_sorting() {
+        let mut points = vec![
+            CurvePoint(75.0, 85.0),
+            CurvePoint(40.0, 0.0),
+            CurvePoint(85.0, 100.0),
+            CurvePoint(50.0, 30.0),
+            CurvePoint(65.0, 60.0),
+        ];
+        points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        
+        // Exact points
+        assert_eq!(FanService::evaluate_spline(&points, 40.0), 0.0);
+        assert_eq!(FanService::evaluate_spline(&points, 85.0), 100.0);
+        
+        // Interpolated point: midpoint of (50.0, 30.0) and (65.0, 60.0) is 57.5°C -> 45.0%
+        let mid = FanService::evaluate_spline(&points, 57.5);
+        assert!((mid - 45.0).abs() < 1e-4);
     }
 }

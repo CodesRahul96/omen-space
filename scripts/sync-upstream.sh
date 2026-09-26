@@ -48,12 +48,17 @@ if git merge upstream_space/main -m "chore: merge upstream changes"; then
     ok "Clean merge completed."
 else
     warn "Merge conflicts detected."
-    if git diff --name-only --diff-filter=U | grep -q "fan.rs"; then
-        warn "Conflict in fan.rs detected! Re-applying fan control safety patch..."
-        # Checkout our fan.rs version to preserve HP hardware control
-        git checkout --ours src/omen-space-daemon/src/fan.rs
-        git add src/omen-space-daemon/src/fan.rs
-        ok "Protected fan.rs preserved."
+    if git diff --name-only --diff-filter=U | grep -qE "fan(/mod)?\.rs"; then
+        warn "Conflict in fan module detected! Re-applying fan control safety patch..."
+        # Checkout our fan version to preserve HP hardware control
+        if [ -f "src/omen-space-daemon/src/fan/mod.rs" ]; then
+            git checkout --ours src/omen-space-daemon/src/fan/mod.rs || true
+            git add src/omen-space-daemon/src/fan/mod.rs || true
+        elif [ -f "src/omen-space-daemon/src/fan.rs" ]; then
+            git checkout --ours src/omen-space-daemon/src/fan.rs || true
+            git add src/omen-space-daemon/src/fan.rs || true
+        fi
+        ok "Protected fan control preserved."
     fi
     warn "Please resolve any remaining conflicts in other files and run: git commit"
     exit 1

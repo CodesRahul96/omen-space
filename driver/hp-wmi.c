@@ -360,11 +360,6 @@ static const struct dmi_system_id victus_s_thermal_profile_boards[] __initconst 
 		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
 	},
 	{
-		/* 8BC2: Victus by HP Gaming Laptop 16-r0xxx */
-		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8BC2")},
-		.driver_data = (void *)&victus_s_thermal_params,
-	},
-	{
 		/* 8C3F: Victus by HP Gaming Laptop 15-fa1xxx */
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8C3F")},
 		.driver_data = (void *)&victus_s_thermal_params,

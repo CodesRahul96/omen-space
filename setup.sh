@@ -19,7 +19,18 @@ install_dependencies() {
     elif command -v apt-get &> /dev/null; then
         echo "Detected Debian/Ubuntu. Installing dependencies via apt..."
         apt-get update
-        apt-get install -y build-essential pkg-config libgtk-4-dev libadwaita-1-dev libgtk4-layer-shell-dev libsystemd-dev libdbus-1-dev dkms linux-headers-$(uname -r) libhidapi-dev
+        # FIX #252: libgtk4-layer-shell-dev is unavailable on some Linux Mint / older Ubuntu
+        # versions where the package hasn't been backported yet. Install mandatory packages
+        # first, then try the layer-shell package gracefully so the build doesn't abort.
+        apt-get install -y build-essential pkg-config libgtk-4-dev libadwaita-1-dev libsystemd-dev libdbus-1-dev dkms linux-headers-$(uname -r) libhidapi-dev
+        if apt-get install -y libgtk4-layer-shell-dev 2>/dev/null; then
+            echo "[✓] libgtk4-layer-shell-dev installed."
+        else
+            echo "[!] Warning: libgtk4-layer-shell-dev not found in apt repos (common on Linux Mint / Ubuntu < 24.04)."
+            echo "    The overlay/tray components may not build. You can try installing it manually:"
+            echo "    https://github.com/wmww/gtk4-layer-shell"
+            echo "    Continuing build without it..."
+        fi
     elif command -v pacman &> /dev/null; then
         echo "Detected Arch Linux. Installing dependencies via pacman..."
         local ARCH_PKGS=(gcc pkgconf gtk4 libadwaita gtk4-layer-shell systemd dbus base-devel dkms hidapi)
@@ -418,6 +429,24 @@ do_update() {
     else
         echo "Warning: Not a git repository. Building current version..."
     fi
+
+    # FIX #254: Remove ALL previously installed DKMS versions for hp-omen-extra
+    # before rebuilding so that old modules don't accumulate across updates.
+    # The user previously had to do this manually each time.
+    echo "====================================="
+    echo " Cleaning up old DKMS modules..."
+    echo "====================================="
+    if command -v dkms &>/dev/null; then
+        OLD_VERSIONS=$(dkms status 2>/dev/null | grep -i 'hp-omen-extra' | grep -oP '(?<=hp-omen-extra[/, ])[^,:]+' | tr -d ' ' | sort -u)
+        if [ -n "$OLD_VERSIONS" ]; then
+            for v in $OLD_VERSIONS; do
+                echo "Removing old DKMS module: hp-omen-extra/$v"
+                dkms remove -m "hp-omen-extra" -v "$v" --all 2>/dev/null || true
+                rm -rf "/usr/src/hp-omen-extra-$v" 2>/dev/null || true
+            done
+        fi
+    fi
+
     do_build
     do_install
 }

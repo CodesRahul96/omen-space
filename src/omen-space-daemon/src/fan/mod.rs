@@ -216,14 +216,9 @@ impl FanService {
             if let Ok(mut entries) = tokio::fs::read_dir(hwmon).await {
                 while let Ok(Some(entry)) = entries.next_entry().await {
                     if let Ok(file_name) = entry.file_name().into_string() {
-                        // FIX #253: Use strip_prefix/strip_suffix instead of direct slice
-                        // indexing to avoid a panic on desktop OMEN boards where the hwmon
-                        // directory may contain unexpected filenames shorter than 9 chars.
-                        if let Some(mid) = file_name
-                            .strip_prefix("fan")
-                            .and_then(|s| s.strip_suffix("_input"))
-                        {
-                            if let Ok(num) = mid.parse::<u32>() {
+                        if file_name.starts_with("fan") && file_name.ends_with("_input") {
+                            let num_str = &file_name[3..file_name.len() - 6];
+                            if let Ok(num) = num_str.parse::<u32>() {
                                 state.found_fans.push(num);
                                 if let Some(fallback) = Self::_find_fallback_path(hwmon, num).await {
                                     state.fallback_paths.insert(num, fallback);
@@ -578,13 +573,18 @@ impl FanService {
                     let is_performance_power = {
                         let pp_path = "/sys/firmware/acpi/platform_profile";
                         let hp_path = "/sys/devices/platform/hp-wmi/platform_profile";
-                        if let Ok(val) = std::fs::read_to_string(pp_path) {
+                        let sysfs_perf = if let Ok(val) = std::fs::read_to_string(pp_path) {
                             val.trim() == "performance"
                         } else if let Ok(val) = std::fs::read_to_string(hp_path) {
                             val.trim() == "performance"
                         } else {
                             false
-                        }
+                        };
+                        sysfs_perf || std::fs::read_to_string("/etc/omen-space/power.json")
+                            .ok()
+                            .and_then(|data| serde_json::from_str::<serde_json::Value>(&data).ok())
+                            .and_then(|v| v.get("power_profile").and_then(|p| p.as_str().map(|s| s == "performance")))
+                            .unwrap_or(false)
                     };
 
                     if state.last_power_profile_was_perf != is_performance_power {

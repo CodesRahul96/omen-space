@@ -224,6 +224,11 @@ static const char *const victus_thermal_profile_boards[] = {
 /* DMI board names of Victus 16-r and Victus 16-s laptops */
 static const struct dmi_system_id victus_s_thermal_profile_boards[] __initconst = {
 	{
+		/* 8786: OMEN Laptop 15-en0xxx */
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8786")},
+		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
+	},
+	{
 		/* 878A: OMEN Laptop 15-ek0xxx */
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "878A")},
 		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
@@ -316,10 +321,6 @@ static const struct dmi_system_id victus_s_thermal_profile_boards[] __initconst 
 		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
 	},
 	{
-		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8D3F")},
-		.driver_data = (void *)&omen_v1_legacy_thermal_params,
-	},
-	{
 		/* 8D40: HP OMEN Slim Gaming Laptop 16-an0xxx */
 		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8D40") },
 		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
@@ -342,7 +343,7 @@ static const struct dmi_system_id victus_s_thermal_profile_boards[] __initconst 
 	},
 	{
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8BA9")},
-		.driver_data = (void *)&omen_v1_thermal_params,
+		.driver_data = (void *)&omen_v1_legacy_thermal_params,
 	},
 	{
 		/*
@@ -362,6 +363,11 @@ static const struct dmi_system_id victus_s_thermal_profile_boards[] __initconst 
 		 */
 		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8C75")},
 		.driver_data = (void *)&omen_v1_no_ec_thermal_params,
+	},
+	{
+		/* 8BC2: Victus by HP Gaming Laptop 16-r0xxx */
+		.matches    = {DMI_MATCH(DMI_BOARD_NAME, "8BC2")},
+		.driver_data = (void *)&victus_s_thermal_params,
 	},
 	{
 		/* 8C3F: Victus by HP Gaming Laptop 15-fa1xxx */
@@ -1707,8 +1713,9 @@ static umode_t hp_wmi_attrs_is_visible(struct kobject *kobj,
 		 */
 		{
 			const char *omen_board = dmi_get_system_info(DMI_BOARD_NAME);
-			if (omen_board && (!strcmp(omen_board, "878A") || !strcmp(omen_board, "8BCD") ||
-					   !strcmp(omen_board, "8C75") || !strcmp(omen_board, "8BAC")))
+			if (omen_board && (!strcmp(omen_board, "878A") || !strcmp(omen_board, "8786") ||
+					   !strcmp(omen_board, "8BCD") || !strcmp(omen_board, "8C75") ||
+					   !strcmp(omen_board, "8BAC")))
 				return 0;
 		}
 
@@ -3602,6 +3609,9 @@ static const struct dmi_system_id broken_omen_hpc_guid_boards[] __initconst = {
 	},
 	{
 		.matches = { DMI_MATCH(DMI_BOARD_NAME, "878A") },
+	},
+	{
+		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8786") },
 	},
 	{
 		.matches = { DMI_MATCH(DMI_BOARD_NAME, "8DD0") },

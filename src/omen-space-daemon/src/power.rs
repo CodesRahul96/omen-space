@@ -548,12 +548,14 @@ impl PowerService {
         
         let available_profiles = Self::get_available_profiles().await;
         
-        // If hardware doesn't support power-saver natively but user selected it,
+        // If hardware doesn't support power-saver or performance natively but user selected it,
         // report it back so the UI doesn't bounce to "Balanced". Software limits (PL1/PL2, GPU)
         // are still applied under the hood.
-        if active == "balanced" && cfg.power_profile == "power-saver" {
-            if !available_profiles.iter().any(|c| c == "power-saver" || c == "low-power" || c == "quiet" || c == "cool") {
+        if active == "balanced" {
+            if cfg.power_profile == "power-saver" && !available_profiles.iter().any(|c| c == "power-saver" || c == "low-power" || c == "quiet" || c == "cool") {
                 active = "power-saver".to_string();
+            } else if cfg.power_profile == "performance" && !available_profiles.iter().any(|c| c == "performance") {
+                active = "performance".to_string();
             }
         }
 

@@ -137,6 +137,40 @@
             "notes": "Discord wafflist 2026-06-15 - OMEN by HP Laptop 15-dh0xxx / ProductId 8600. Exact conservative legacy profile added after FAMILY_LEGACY fallback, barely-effective fan modes except Max, missing PawnIO, CPU temp stuck near 28C, CPU power 0W, and fan RPM 0. Direct EC writes and RPM readback remain disabled until PawnIO/readback validation confirms the board path; WMI thermal-policy fallback enabled for Quick Profiles."
         },
         {
+            "product_id": "8786",
+            "model_name": "OMEN Laptop 15-en0xxx (2020) AMD",
+            "model_year": 2020,
+            "family": "Legacy",
+            "supports_fan_control_wmi": true,
+            "supports_fan_control_ec": false,
+            "supports_fan_curves": true,
+            "supports_independent_fan_curves": false,
+            "supports_rpm_readback": false,
+            "fan_zone_count": 2,
+            "max_fan_speed_percent": 100,
+            "min_fan_speed_percent": 0,
+            "supports_performance_modes": true,
+            "performance_modes": [
+                "Default",
+                "Performance",
+                "Cool"
+            ],
+            "allow_decoupled_wmi_thermal_policy_fallback": true,
+            "has_mux_switch": false,
+            "supports_gpu_power_boost": true,
+            "supports_advanced_optimus": false,
+            "has_keyboard_backlight": true,
+            "has_four_zone_rgb": true,
+            "has_per_key_rgb": false,
+            "has_light_bar": false,
+            "supports_undervolt": false,
+            "supports_tcc_offset": false,
+            "supports_power_limits": true,
+            "supports_battery_care": true,
+            "linux_assessment": null,
+            "notes": "HP OMEN Laptop 15-en0xxx, ProductId 8786 (AMD Ryzen 5 4600H + GTX 1660 Ti). WMI 0x28 query abort-prone board with decoupled thermal policy fallback and safe non-readback fan curve control."
+        },
+        {
             "product_id": "8787",
             "model_name": "OMEN 15-en0038ur (2020) AMD",
             "model_year": 2020,
@@ -2267,6 +2301,7 @@
         "8BCD",
         "8C75",
         "878A",
+        "8786",
         "8A42",
         "88F8"
     ]

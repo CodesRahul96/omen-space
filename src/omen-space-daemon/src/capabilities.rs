@@ -290,3 +290,18 @@ fn get_known_model(board_id: &str) -> Option<ModelCapabilities> {
     let id_upper = board_id.to_uppercase();
     get_all_models().iter().find(|m| m.product_id == id_upper).cloned()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_board_8786_capabilities() {
+        let cap = detect("8786", "OMEN Laptop 15-en0xxx", "AMD Ryzen 5 4600H");
+        assert_eq!(cap.product_id, "8786");
+        assert!(cap.supports_performance_modes);
+        assert!(cap.allow_decoupled_wmi_thermal_policy_fallback);
+        assert!(!cap.supports_undervolt); // AMD should not have undervolt enabled
+        assert!(LinuxCapabilityClassifier::is_wmaa_abort_prone_board("8786"));
+    }
+}

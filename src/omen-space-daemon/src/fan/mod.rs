@@ -573,13 +573,18 @@ impl FanService {
                     let is_performance_power = {
                         let pp_path = "/sys/firmware/acpi/platform_profile";
                         let hp_path = "/sys/devices/platform/hp-wmi/platform_profile";
-                        if let Ok(val) = std::fs::read_to_string(pp_path) {
+                        let sysfs_perf = if let Ok(val) = std::fs::read_to_string(pp_path) {
                             val.trim() == "performance"
                         } else if let Ok(val) = std::fs::read_to_string(hp_path) {
                             val.trim() == "performance"
                         } else {
                             false
-                        }
+                        };
+                        sysfs_perf || std::fs::read_to_string("/etc/omen-space/power.json")
+                            .ok()
+                            .and_then(|data| serde_json::from_str::<serde_json::Value>(&data).ok())
+                            .and_then(|v| v.get("power_profile").and_then(|p| p.as_str().map(|s| s == "performance")))
+                            .unwrap_or(false)
                     };
 
                     if state.last_power_profile_was_perf != is_performance_power {

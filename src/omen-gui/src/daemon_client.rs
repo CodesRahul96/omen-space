@@ -141,6 +141,8 @@ pub fn is_board_verified_sync(board_id: &str) -> bool {
         | "8E5D"
         // Issue #242 – OMEN 16 n0xxx, profile works via fallback (fan WMI degraded)
         | "8A42"
+        // Issue #169 – OMEN MAX 16-ah0xxx
+        | "8D41"
     )
 }
 

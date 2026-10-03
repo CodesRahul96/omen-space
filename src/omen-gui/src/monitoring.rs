@@ -506,11 +506,11 @@ pub fn build_page(is_general: bool) -> gtk::Box {
             if let Some(win) = sec_clone.root().and_downcast::<gtk::Window>() {
                 let dialog = adw::MessageDialog::new(
                     Some(&win),
-                    Some("Daemon Çalışmıyor"),
-                    Some("Daemon şu an çalışmıyor. Fan RPM'leri alınamıyor.\nDaemonu yeniden başlatmak ister misiniz?")
+                    Some(crate::i18n::t("daemon_offline_title")),
+                    Some(crate::i18n::t("daemon_offline_msg"))
                 );
-                dialog.add_response("cancel", "İptal");
-                dialog.add_response("restart", "Yeniden Başlat");
+                dialog.add_response("cancel", crate::i18n::t("btn_cancel"));
+                dialog.add_response("restart", crate::i18n::t("btn_restart"));
                 dialog.set_response_appearance("restart", adw::ResponseAppearance::Suggested);
                 
                 dialog.connect_response(None, |d, response| {

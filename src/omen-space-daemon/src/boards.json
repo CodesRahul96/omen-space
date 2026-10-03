@@ -2178,7 +2178,7 @@
         },
         {
             "product_id": "8A4F",
-            "model_name": "HP Victus 15-fa0000 (2022)",
+            "model_name": "Victus by HP Gaming Laptop 15-fa0xxx",
             "model_year": 2022,
             "family": "Victus",
             "supports_fan_control_wmi": false,
@@ -2330,7 +2330,8 @@
         "8C9C",
         "8E5D",
         "8A42",
-        "8D41"
+        "8D41",
+        "8A4F"
     ],
     "wmaa_abort_prone_boards": [
         "8BCD",

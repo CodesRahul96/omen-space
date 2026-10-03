@@ -232,12 +232,10 @@ fn build_ui(app: &adw::Application) {
                 board_id
             );
 
+            let banner_msg = crate::i18n::t("unverified_board_banner").replace("{}", &board_id);
             let banner = adw::Banner::builder()
-                .title(format!(
-                    "⚠️  Board {} için OMEN Space desteği henüz doğrulanmamış.",
-                    board_id
-                ))
-                .button_label("GitHub'da Issue Oluştur")
+                .title(&banner_msg)
+                .button_label(crate::i18n::t("btn_create_gh_issue"))
                 .revealed(true)
                 .build();
 

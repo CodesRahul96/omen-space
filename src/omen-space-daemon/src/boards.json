@@ -2243,6 +2243,40 @@
             "supports_battery_care": true,
             "linux_assessment": null,
             "notes": "GitHub #247 \u2014 Victus 16-d0xxx (88F8). Frequent WMBX/WMBA AE_AML_BUFFER_LIMIT errors leading to WMI unresponsiveness (Max fan mode switch fails after first use). Treated as abort-prone; RPM readback disabled to prevent WMI poll spam triggering the buffer limit. Thermal profile control routes via hp_wmi/acpi fallback."
+        },
+        {
+            "product_id": "8D41",
+            "model_name": "OMEN MAX Gaming Laptop 16-ah0xxx",
+            "model_year": 2024,
+            "family": "Max",
+            "supports_fan_control_wmi": true,
+            "supports_fan_control_ec": true,
+            "supports_fan_curves": true,
+            "supports_independent_fan_curves": true,
+            "supports_rpm_readback": true,
+            "fan_zone_count": 2,
+            "max_fan_speed_percent": 100,
+            "min_fan_speed_percent": 0,
+            "supports_performance_modes": true,
+            "performance_modes": [
+                "Default",
+                "Performance",
+                "Cool"
+            ],
+            "allow_decoupled_wmi_thermal_policy_fallback": false,
+            "has_mux_switch": true,
+            "supports_gpu_power_boost": true,
+            "supports_advanced_optimus": true,
+            "has_keyboard_backlight": true,
+            "has_four_zone_rgb": false,
+            "has_per_key_rgb": true,
+            "has_light_bar": true,
+            "supports_undervolt": true,
+            "supports_tcc_offset": true,
+            "supports_power_limits": true,
+            "supports_battery_care": true,
+            "linux_assessment": null,
+            "notes": "OMEN MAX Gaming Laptop 16-ah0xxx (8D41). Per-Key RGB with HID backend, lightbar, and MUX support."
         }
     ],
     "verified_boards": [
@@ -2295,7 +2329,8 @@
         "8C99",
         "8C9C",
         "8E5D",
-        "8A42"
+        "8A42",
+        "8D41"
     ],
     "wmaa_abort_prone_boards": [
         "8BCD",

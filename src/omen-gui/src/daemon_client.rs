@@ -143,6 +143,8 @@ pub fn is_board_verified_sync(board_id: &str) -> bool {
         | "8A42"
         // Issue #169 – OMEN MAX 16-ah0xxx
         | "8D41"
+        // Issue #246 – Victus 15-fa0xxx
+        | "8A4F"
     )
 }
 

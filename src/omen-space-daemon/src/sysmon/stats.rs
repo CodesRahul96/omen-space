@@ -291,10 +291,25 @@ pub fn fetch_system_stats() -> SystemStats {
     // ── 8. Chassis / IR Temperature (WMI 0x23 via hp-wmi sysfs) ──────────
     // The file is only created when the firmware supports the query, so a
     // missing file is a normal "not supported" condition, not an error.
-    let chassis_sysfs = "/sys/devices/platform/hp-wmi/chassis_temp";
-    if let Ok(s) = fs::read_to_string(chassis_sysfs) {
-        if let Ok(v) = s.trim().parse::<i32>() {
-            stats.chassis_temp = v;
+    // Querying it triggers an ACPI WMI call which causes AE_AML_BUFFER_LIMIT BIOS
+    // errors on boards like 8D87. Cache the value for 60 seconds to prevent
+    // flooding journald with 36 error lines/min while preserving UI telemetry.
+    static CHASSIS_CACHE: std::sync::Mutex<Option<(std::time::Instant, i32)>> = std::sync::Mutex::new(None);
+    if let Ok(mut cache) = CHASSIS_CACHE.lock() {
+        let now = std::time::Instant::now();
+        let should_read = match *cache {
+            Some((last_read, _)) => now.duration_since(last_read).as_secs() >= 60,
+            None => true,
+        };
+        if should_read {
+            let val = fs::read_to_string("/sys/devices/platform/hp-wmi/chassis_temp")
+                .ok()
+                .and_then(|s| s.trim().parse::<i32>().ok())
+                .unwrap_or(0);
+            *cache = Some((now, val));
+            stats.chassis_temp = val;
+        } else if let Some((_, val)) = *cache {
+            stats.chassis_temp = val;
         }
     }
 

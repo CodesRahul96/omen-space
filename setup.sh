@@ -181,6 +181,7 @@ remove_legacy_omenctl() {
     modprobe -r hp_rgb_lighting 2>/dev/null || true
     rm -rf /usr/src/hp-rgb-lighting-*
     rm -f /etc/modules-load.d/hp-rgb-lighting.conf
+    rm -f /etc/modprobe.d/omen-space-hpwmi-override.conf
 
     systemctl daemon-reload
     systemctl reload dbus 2>/dev/null || true
@@ -390,6 +391,7 @@ do_uninstall() {
     rm -f /etc/systemd/system/omen-space-daemon.service
     rm -f /usr/lib/sysusers.d/omen-space.conf
     rm -f /usr/lib/udev/rules.d/99-omen-space.rules
+    rm -f /etc/modprobe.d/omen-space-hpwmi-override.conf
 
     rm -f /usr/bin/omen-cli
     rm -f /usr/bin/omen-tray

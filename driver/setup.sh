@@ -454,19 +454,10 @@ do_install() {
     info "GPU TGP:     /sys/devices/platform/hp-wmi/gpu_tgp"
 
     # Create modules-load.d entry so systemd loads both modules at boot.
-    # hp_wmi must be listed first: it is a dependency of hp_omen_extra and
-    # listing it explicitly guarantees the DKMS version (in updates/) loads
-    # before the dependency resolver runs for hp_omen_extra.
+    # hp_wmi provides the HP WMI hotkeys input device and platform sysfs nodes;
+    # hp_omen_extra provides RGB and gaming features.
     info "Configuring auto-load on boot..."
-    # FIX #4: Never explicitly load hp_wmi via modules-load.d on abort-prone boards
-    # (early WMI calls during systemd-modules-load.service hang EC). The hp-omen-extra
-    # module exports symbols that pull hp_wmi in automatically when needed.
-    if [ -z "${FORCE_EARLY_HP_WMI_LOAD:-}" ]; then
-        printf 'hp_omen_extra\n' > /etc/modules-load.d/hp-omen-extra.conf
-    else
-        # Explicit early load only for Tegra/VM/testing environments that need it
-        printf 'hp_wmi\nhp_omen_extra\n' > /etc/modules-load.d/hp-omen-extra.conf
-    fi
+    printf 'hp_wmi\nhp_omen_extra\n' > /etc/modules-load.d/hp-omen-extra.conf
 
     echo ""
 }

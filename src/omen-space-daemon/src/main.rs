@@ -40,6 +40,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         info!("Conflict Check: {}", conflicts.warning_message);
     }
 
+    // Ensure hp_wmi is loaded if not already present so HP WMI hotkeys and sysfs nodes exist
+    if !std::path::Path::new("/sys/devices/platform/hp-wmi").exists() {
+        let _ = std::process::Command::new("modprobe").arg("hp_wmi").output();
+    }
+
     // Spawn background BIOS update checker (staggered at 10s)
     tokio::spawn(async {
         tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
